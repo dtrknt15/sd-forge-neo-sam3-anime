@@ -1,0 +1,3 @@
+# Optional: official SAM3 is installed via install.py from GitHub.
+# Forge Neo already provides torch / gradio / numpy / Pillow.
+# Keep this file empty of hard deps so a failed pip does not break the extension.

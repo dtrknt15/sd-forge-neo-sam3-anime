@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+models/
+tmp/
+*.log
