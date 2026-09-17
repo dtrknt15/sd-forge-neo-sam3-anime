@@ -65,7 +65,9 @@ Links:
 3. **Generate masks** — SAM3 is auto-loaded if not already loaded
 4. Toggle **使用するマスク** to include/exclude individual concept masks (updates preview/export without re-running SAM3)
 5. Adjust `dilate / erode`, `invert mask` as needed
-6. **Export to inpaint** (switches to Inpaint upload when possible)
+6. **Export to inpaint** — always targets **img2img → Inpaint upload**
+   - On **img2img**: Export is primary
+   - On **txt2img**: Download mask PNG is primary; Export switches to img2img Inpaint upload
 7. Optional: **Unload SAM3** / **Free VRAM**
 
 If no checkpoint is found, the UI shows the expected path (`models/SAM3/sam3.pt`) and HF gated-access notes.
@@ -184,7 +186,9 @@ Hugging Face 上の SAM3 重みは **Gated** です。申請して承認され�
 3. **Generate masks**（未ロード時は自動ロード）
 4. **使用するマスク** で個別ON/OFF（プレビュー/Export へ即時反映、再推論なし）
 5. `dilate / erode`、`invert mask` を調整
-6. **Export to inpaint**（可能なら Inpaint upload タブへ切替）
+6. **Export to inpaint** — 送信先は常に **img2img → Inpaint upload**
+   - **img2img** タブ: Export が主ボタン
+   - **txt2img** タブ: マスク PNG Download が主。Export を押すと img2img Inpaint upload へ自動切替
 7. 任意で **Unload SAM3** / **Free VRAM**
 
 チェックポイントが無いときは、配置先パス（`models/SAM3/sam3.pt`）と HF gated 申請の案内を UI に表示します。

@@ -92,14 +92,11 @@ class Sam3AnimeMaskScript(scripts.Script):
             elem_id=f"sam3_anime_acc_{tab}",
         ):
             gr.Markdown(
-                "v1 はアニメ用プリセットを SAM3 のテキストプロンプトに変換して切るだけです。"
-                "物体の自動認識一覧はありません。"
-                "Image が空なら img2img の画像を自動参照します。"
-                "未ロード時は Generate が自動ロードします。"
-                " 自由入力はカンマ区切りで複数コンセプトに分割されます（`extra` チェック不要）。"
+                "画像が空なら img2img を参照。未ロードでも Generate で自動ロード。"
+                "自由入力はカンマ分割（`extra` 不要）。プレビュー画像はクリックで拡大。"
             )
 
-            # --- model row ---
+            # --- model ---
             ckpts = _safe_list_checkpoints()
             default_ckpt = _preferred_ckpt(ckpts)
             with gr.Row():
@@ -109,68 +106,86 @@ class Sam3AnimeMaskScript(scripts.Script):
                     value=default_ckpt,
                     interactive=True,
                     elem_id=f"sam3_anime_ckpt_{tab}",
+                    scale=3,
+                )
+                refresh_ckpt_btn = gr.Button(
+                    "Refresh", elem_id=f"sam3_anime_refckpt_{tab}", scale=1
                 )
             ckpt_note = gr.Markdown(
                 _ckpt_warning_text(default_ckpt),
                 elem_id=f"sam3_anime_ckpt_note_{tab}",
             )
             with gr.Row():
-                load_btn = gr.Button("Load SAM3", elem_id=f"sam3_anime_load_{tab}")
-                unload_btn = gr.Button("Unload SAM3", elem_id=f"sam3_anime_unload_{tab}")
+                load_btn = gr.Button("Load", elem_id=f"sam3_anime_load_{tab}")
+                unload_btn = gr.Button("Unload", elem_id=f"sam3_anime_unload_{tab}")
                 free_btn = gr.Button("Free VRAM", elem_id=f"sam3_anime_free_{tab}")
-                refresh_ckpt_btn = gr.Button("Refresh checkpoints", elem_id=f"sam3_anime_refckpt_{tab}")
             status = gr.Textbox(
                 label="Status",
                 value="SAM3: not loaded",
                 interactive=False,
+                lines=1,
+                max_lines=3,
                 elem_id=f"sam3_anime_status_{tab}",
             )
 
-            # --- input ---
-            input_image = gr.Image(
-                label="参照画像",
-                type="pil",
-                image_mode="RGB",
-                elem_id=f"sam3_anime_input_{tab}",
-            )
-
-            # --- presets ---
-            preset_ids = [p[0] for p in constants.PRESETS]
-            preset_labels = [f"{p[1]} ({p[0]})" if p[0] != "extra" else p[1] for p in constants.PRESETS]
-            # CheckboxGroup values are ids for backend clarity
-            presets = gr.CheckboxGroup(
-                choices=list(zip(preset_labels, preset_ids)),
-                value=list(constants.DEFAULT_SELECTED),
-                label="アニメプリセット",
-                elem_id=f"sam3_anime_presets_{tab}",
-            )
-            free_text = gr.Textbox(
-                label="自由入力（カンマ区切り可・extra チェック不要）",
-                placeholder="例: cat ears, ribbon, sword",
-                elem_id=f"sam3_anime_freetext_{tab}",
-            )
-            gr.Markdown("注意: `background` は前景人物を除外しきれないことがあります。")
-
-            # --- generate params ---
+            # --- input + presets side by side ---
             with gr.Row():
-                generate_btn = gr.Button("Generate masks", variant="primary", elem_id=f"sam3_anime_gen_{tab}")
+                input_image = gr.Image(
+                    label="参照画像（クリックで拡大）",
+                    type="pil",
+                    image_mode="RGB",
+                    height=220,
+                    elem_id=f"sam3_anime_input_{tab}",
+                    scale=1,
+                )
+                with gr.Column(scale=1):
+                    preset_ids = [p[0] for p in constants.PRESETS]
+                    preset_labels = [
+                        f"{p[1]} ({p[0]})" if p[0] != "extra" else p[1] for p in constants.PRESETS
+                    ]
+                    presets = gr.CheckboxGroup(
+                        choices=list(zip(preset_labels, preset_ids)),
+                        value=list(constants.DEFAULT_SELECTED),
+                        label="アニメプリセット",
+                        elem_id=f"sam3_anime_presets_{tab}",
+                    )
+                    free_text = gr.Textbox(
+                        label="自由入力（カンマ区切り・extra 不要）",
+                        placeholder="例: cat ears, ribbon, sword",
+                        elem_id=f"sam3_anime_freetext_{tab}",
+                    )
+
+            # --- generate + params ---
             with gr.Row():
+                generate_btn = gr.Button(
+                    "Generate masks", variant="primary", elem_id=f"sam3_anime_gen_{tab}", scale=1
+                )
                 threshold = gr.Slider(
-                    label="mask threshold", minimum=0.0, maximum=1.0, value=0.5, step=0.01
+                    label="threshold", minimum=0.0, maximum=1.0, value=0.5, step=0.01, scale=2
                 )
                 max_side = gr.Slider(
-                    label="max side", minimum=512, maximum=1536, value=1024, step=64
+                    label="max side", minimum=512, maximum=1536, value=1024, step=64, scale=2
                 )
             with gr.Row():
-                combine = gr.Checkbox(label="combine selected into one mask", value=True)
-                invert = gr.Checkbox(label="invert mask", value=False)
-            dilate = gr.Slider(
-                label="dilate / erode", minimum=-32, maximum=32, value=0, step=1
-            )
+                dilate = gr.Slider(
+                    label="dilate / erode (px)",
+                    minimum=-64,
+                    maximum=64,
+                    value=0,
+                    step=1,
+                    info="プラスで膨張 / マイナスで収縮。ドラッグ中も更新",
+                    scale=3,
+                )
+                invert = gr.Checkbox(label="invert", value=False, scale=1)
+                combine = gr.Checkbox(label="combine", value=True, scale=1)
 
-            # --- outputs ---
+            # --- outputs (compact) ---
             gallery = gr.Gallery(
-                label="個別マスク", columns=4, height=240, elem_id=f"sam3_anime_gallery_{tab}"
+                label="個別マスク",
+                columns=5,
+                height=180,
+                object_fit="contain",
+                elem_id=f"sam3_anime_gallery_{tab}",
             )
             active_masks = gr.CheckboxGroup(
                 label="使用するマスク（生成後に個別ON/OFF）",
@@ -178,8 +193,21 @@ class Sam3AnimeMaskScript(scripts.Script):
                 value=[],
                 elem_id=f"sam3_anime_active_{tab}",
             )
-            combined_img = gr.Image(label="合成マスク", type="pil", elem_id=f"sam3_anime_combined_{tab}")
-            overlay_img = gr.Image(label="オーバーレイ", type="pil", elem_id=f"sam3_anime_overlay_{tab}")
+            with gr.Row():
+                combined_img = gr.Image(
+                    label="合成マスク（クリックで拡大）",
+                    type="pil",
+                    height=260,
+                    elem_id=f"sam3_anime_combined_{tab}",
+                    scale=1,
+                )
+                overlay_img = gr.Image(
+                    label="オーバーレイ（クリックで拡大）",
+                    type="pil",
+                    height=260,
+                    elem_id=f"sam3_anime_overlay_{tab}",
+                    scale=1,
+                )
 
             # Hidden store: processed image for export / re-postprocess
             store_image = gr.State(None)
@@ -187,11 +215,41 @@ class Sam3AnimeMaskScript(scripts.Script):
             # JS → Python transfer for Forge Canvas image (base64 data URL)
             canvas_b64 = gr.Textbox(value="", visible=False, elem_id=f"sam3_anime_canvas_b64_{tab}")
 
-            with gr.Row():
-                export_btn = gr.Button("Export to inpaint", elem_id=f"sam3_anime_export_{tab}")
-                download_btn = gr.DownloadButton(
-                    "Download combined mask", visible=True, elem_id=f"sam3_anime_dl_{tab}"
+            # Export always targets img2img → Inpaint upload, even from txt2img.
+            if is_img2img:
+                export_label = "Export to inpaint (img2img)"
+                download_label = "Download mask PNG"
+                export_hint = (
+                    "Export は **img2img → Inpaint upload** に画像+マスクを送ります。"
                 )
+                export_btn_kwargs = {"variant": "primary"}
+                download_btn_kwargs = {"variant": "secondary"}
+            else:
+                export_label = "Export to img2img Inpaint"
+                download_label = "Download mask PNG"
+                export_hint = (
+                    "このタブでは **マスク PNG の Download** が主です。"
+                    " Export を押すと **img2img → Inpaint upload** へ自動で切り替わります。"
+                )
+                export_btn_kwargs = {"variant": "secondary"}
+                download_btn_kwargs = {"variant": "primary"}
+
+            gr.Markdown(export_hint, elem_id=f"sam3_anime_export_hint_{tab}")
+            with gr.Row():
+                if is_img2img:
+                    export_btn = gr.Button(
+                        export_label, elem_id=f"sam3_anime_export_{tab}", **export_btn_kwargs
+                    )
+                    download_btn = gr.DownloadButton(
+                        download_label, elem_id=f"sam3_anime_dl_{tab}", **download_btn_kwargs
+                    )
+                else:
+                    download_btn = gr.DownloadButton(
+                        download_label, elem_id=f"sam3_anime_dl_{tab}", **download_btn_kwargs
+                    )
+                    export_btn = gr.Button(
+                        export_label, elem_id=f"sam3_anime_export_{tab}", **export_btn_kwargs
+                    )
             export_status = gr.Markdown("", elem_id=f"sam3_anime_export_status_{tab}")
             export_payload = gr.Textbox(visible=False, elem_id=f"sam3_anime_export_payload_{tab}")
 
@@ -443,7 +501,8 @@ class Sam3AnimeMaskScript(scripts.Script):
             def _repost_inputs():
                 return [store_image, store_masks, active_masks, dilate, invert, combine]
 
-            dilate.release(
+            # Live update while dragging (not only on release)
+            dilate.input(
                 fn=_repost,
                 inputs=_repost_inputs(),
                 outputs=[gallery, combined_img, overlay_img],
@@ -503,10 +562,27 @@ class Sam3AnimeMaskScript(scripts.Script):
                     return (msg, "", gr.update(), gr.update()) if has_canvas else (msg, "")
 
                 if has_canvas:
-                    init_pil, mask_pil = forge_export.build_inpaint_pair(store_img, mask)
-                    note = f"Exported to img2img → Inpaint upload. PNG: {png_path}"
-                    return note, payload, init_pil, mask_pil
-                return msg, payload
+                    try:
+                        init_pil, mask_pil = forge_export.build_inpaint_pair(store_img, mask)
+                        note = (
+                            f"Exported to **img2img → Inpaint upload**. "
+                            f"マスク PNG: `{png_path}`"
+                        )
+                        return note, payload, gr.update(value=init_pil), gr.update(value=mask_pil)
+                    except Exception as e:
+                        _log(f"build_inpaint_pair failed: {e}")
+                        return (
+                            f"Export prepared（画像セットに失敗: {e}）. PNG: `{png_path}`",
+                            payload,
+                            gr.update(),
+                            gr.update(),
+                        )
+                note = (
+                    f"Export prepared（送信先: **img2img → Inpaint upload**）. "
+                    f"マスク PNG: `{png_path}`。"
+                    "自動送信に失敗した場合は PNG を手動で Inpaint upload へどうぞ。"
+                )
+                return note, payload
 
             def _dl_mask(combined):
                 from sam3_anime import forge_export
@@ -526,18 +602,46 @@ class Sam3AnimeMaskScript(scripts.Script):
             else:
                 _log("inpaint components not captured; export falls back to PNG + JS")
 
-            export_btn.click(
+            # Python first: write image+mask into inpaint components / PNG
+            export_event = export_btn.click(
                 fn=_prepare_export,
                 inputs=[store_image, combined_img, store_masks, combine, active_masks],
                 outputs=export_outputs,
-            ).then(
+            )
+
+            # Separate click (WebUI copy-button pattern): tab switch is independent of image set
+            export_btn.click(
                 fn=None,
-                _js="() => { try { if (window.sam3AnimeFocusInpaintUpload) window.sam3AnimeFocusInpaintUpload(); } catch (e) {} return true; }",
+                _js="sam3AnimeFocusInpaintUpload",
                 inputs=[],
                 outputs=[],
             )
 
-            # JS fallback only when component capture failed
+            # JS inject only when component capture failed — must run AFTER payload is written
+            if not (_INPAINT_BASE is not None and _INPAINT_MASK is not None):
+                export_event.then(
+                    fn=None,
+                    _js=(
+                        "() => {"
+                        " try {"
+                        "  const root = (typeof gradioApp === 'function') ? gradioApp() : document;"
+                        "  const payloadEl = root.querySelector("
+                        "    'textarea[id*=\"sam3_anime_export_payload\"], [id*=\"sam3_anime_export_payload\"] textarea'"
+                        "  );"
+                        "  const payload = payloadEl ? payloadEl.value : '';"
+                        "  if (window.sam3AnimeInjectInpaint && payload) {"
+                        "    window.sam3AnimeInjectInpaint(payload);"
+                        "  }"
+                        " } catch (e) {}"
+                        " return [];"
+                        "}"
+                    ),
+                    inputs=[],
+                    outputs=[],
+                )
+
+            # JS fallback only when component capture failed.
+            # Must run AFTER export writes payload → use .then on the Python click.
             if not (_INPAINT_BASE is not None and _INPAINT_MASK is not None):
                 export_btn.click(
                     fn=None,
@@ -545,11 +649,15 @@ class Sam3AnimeMaskScript(scripts.Script):
                         "() => {"
                         " try {"
                         "  const root = (typeof gradioApp === 'function') ? gradioApp() : document;"
-                        "  const payloadEl = root.querySelector('textarea[id*=\"sam3_anime_export_payload\"], [id*=\"sam3_anime_export_payload\"] textarea');"
+                        "  const payloadEl = root.querySelector("
+                        "    'textarea[id*=\"sam3_anime_export_payload\"], [id*=\"sam3_anime_export_payload\"] textarea'"
+                        "  );"
                         "  const payload = payloadEl ? payloadEl.value : '';"
-                        "  if (window.sam3AnimeInjectInpaint && payload) return window.sam3AnimeInjectInpaint(payload);"
-                        " } catch (e) { return 'js_error'; }"
-                        " return 'no_payload';"
+                        "  if (window.sam3AnimeInjectInpaint && payload) {"
+                        "    window.sam3AnimeInjectInpaint(payload);"
+                        "  }"
+                        " } catch (e) {}"
+                        " return [];"
                         "}"
                     ),
                     inputs=[],

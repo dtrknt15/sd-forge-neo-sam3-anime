@@ -1,8 +1,9 @@
 /**
  * Best-effort inject of init image + mask into Forge Neo img2img Inpaint upload.
  * Payload: JSON string {"image": "<b64 png>", "mask": "<b64 png>"}
+ * Classic script (not a module) — Forge Neo loads extension .js as text/javascript.
  */
-export function sam3AnimeInjectInpaint(payload) {
+function sam3AnimeInjectInpaint(payload) {
   if (!payload) return "no_payload";
   let data = payload;
   if (typeof payload === "string") {
@@ -36,24 +37,16 @@ export function sam3AnimeInjectInpaint(payload) {
     return true;
   }
 
-  // Activate img2img tab
-  for (const btn of root.querySelectorAll("button")) {
-    const t = (btn.textContent || "").trim();
-    if (t === "img2img") {
-      try { btn.click(); break; } catch (e) {}
-    }
+  // Switch to img2img → Inpaint upload first so the components exist/visible
+  if (typeof sam3AnimeFocusInpaintUpload === "function") {
+    try {
+      sam3AnimeFocusInpaintUpload();
+    } catch (e) {}
   }
 
-  // Prefer Inpaint upload components (known IDs in Forge Neo)
   const baseEl = root.querySelector("#img_inpaint_base");
   const maskEl = root.querySelector("#img_inpaint_mask");
   if (!baseEl || !maskEl) return "missing_components";
-
-  try {
-    const tabBtn = root.querySelector("#img2img_inpaint_upload_tab button")
-      || root.querySelector("#img2img_inpaint_upload_tab");
-    if (tabBtn && tabBtn.click) tabBtn.click();
-  } catch (e) {}
 
   const okBase = setFileInput(
     baseEl,
@@ -66,7 +59,6 @@ export function sam3AnimeInjectInpaint(payload) {
   return okBase && okMask ? "ok" : "file_input_missing";
 }
 
-// Expose on window for Gradio _js callbacks
 if (typeof window !== "undefined") {
   window.sam3AnimeInjectInpaint = sam3AnimeInjectInpaint;
 }

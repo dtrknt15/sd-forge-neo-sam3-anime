@@ -20,17 +20,33 @@ def _to_np(mask: Image.Image | np.ndarray) -> np.ndarray:
     return (arr > 127).astype(np.uint8) * 255
 
 
+def _morph_cv2(mask_u8: np.ndarray, amount: int) -> np.ndarray | None:
+    """OpenCV morph (fast). amount > 0 dilate, amount < 0 erode."""
+    k = abs(int(amount))
+    if k == 0:
+        return mask_u8
+    try:
+        import cv2
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1))
+        op = cv2.dilate if amount > 0 else cv2.erode
+        return op(mask_u8, kernel, iterations=1)
+    except Exception:
+        return None
+
+
 def _morph_pil(mask_u8: np.ndarray, amount: int) -> np.ndarray:
     """amount > 0 dilate, amount < 0 erode. Elliptical kernel, iterations=|amount|."""
     if amount == 0:
         return mask_u8
+    fast = _morph_cv2(mask_u8, amount)
+    if fast is not None:
+        return fast
     img = Image.fromarray(mask_u8, mode="L")
     iterations = abs(int(amount))
-    # size 3 elliptical-ish via Max/Min filter
     from PIL import ImageFilter
 
     op = ImageFilter.MaxFilter if amount > 0 else ImageFilter.MinFilter
-    # MaxFilter/MinFilter only support odd sizes >= 3
     size = 3
     out = img
     for _ in range(iterations):

@@ -1,0 +1,46 @@
+/* Compact SAM3 Anime Mask UI */
+
+/* Keep preview images bounded; allow click-to-zoom */
+[id^="sam3_anime_input_"] img,
+[id^="sam3_anime_combined_"] img,
+[id^="sam3_anime_overlay_"] img {
+  max-height: 280px;
+  object-fit: contain;
+  cursor: zoom-in;
+  width: 100%;
+}
+
+[id^="sam3_anime_input_"] .image-container,
+[id^="sam3_anime_combined_"] .image-container,
+[id^="sam3_anime_overlay_"] .image-container {
+  max-height: 300px;
+  overflow: hidden;
+}
+
+/* Lightbox overlay */
+#sam3_zoom_modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.82);
+  cursor: zoom-out;
+}
+
+#sam3_zoom_modal.sam3-zoom-open {
+  display: flex;
+}
+
+#sam3_zoom_modal img {
+  max-width: 96vw;
+  max-height: 96vh;
+  object-fit: contain;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  background: #111;
+}
+
+[id^="sam3_anime_status_"] textarea {
+  font-size: 12px;
+}
