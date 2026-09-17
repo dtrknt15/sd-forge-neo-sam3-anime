@@ -45,6 +45,20 @@ def _webui_models_dir() -> Path:
     return base / "SAM3"
 
 
+def models_dir() -> Path:
+    return _webui_models_dir()
+
+
+def missing_checkpoint_hint() -> str:
+    folder = _webui_models_dir()
+    return (
+        f"チェックポイント未検出です。公式の `sam3.pt` を `{folder}` に置いて "
+        "**Refresh checkpoints** を押してください。"
+        " Hugging Face の [facebook/sam3](https://huggingface.co/facebook/sam3) は gated なので事前申請が必要です。"
+        " または環境変数 `SAM3_CHECKPOINT` にファイルパスを指定できます。"
+    )
+
+
 def list_checkpoints() -> list[str]:
     names: list[str] = []
     env = os.environ.get("SAM3_CHECKPOINT", "").strip()

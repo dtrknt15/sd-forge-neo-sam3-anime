@@ -15,8 +15,12 @@ Anime-oriented inpaint mask helper for **Stable Diffusion WebUI Forge Neo** (Gra
 2. Auto-loads SAM3 on Generate if not already loaded
 3. Check anime presets (face / hair / clothes / …) or add free-text concepts
 4. Generate per-concept masks, preview, dilate/erode, invert, combine
-5. Export image + mask to **img2img → Inpaint upload**
-6. Unload / Free VRAM when done
+5. After generate, toggle which concept masks are used (no re-inference)
+6. Export image + mask to **img2img → Inpaint upload**
+7. Unload / Free VRAM when done
+
+Free text is always applied when non-empty (the `extra` checkbox is optional).
+Comma-separated phrases become separate masks (`cat ears, ribbon` → 2 masks).
 
 ## Install
 
@@ -57,11 +61,14 @@ Links:
 ## Usage
 
 1. Put an image on img2img (or drop it into the extension Image box — if empty, img2img init image is used automatically)
-2. Check presets (default: `face`). Optional free text: `cat ears, ribbon, sword`
+2. Check presets (default: `face`). Optional free text: `cat ears, ribbon, sword` (comma-split into separate masks; `extra` checkbox not required)
 3. **Generate masks** — SAM3 is auto-loaded if not already loaded
-4. Adjust `dilate / erode`, `invert mask` as needed
-5. **Export to inpaint** (switches to Inpaint upload when possible)
-6. Optional: **Unload SAM3** / **Free VRAM**
+4. Toggle **使用するマスク** to include/exclude individual concept masks (updates preview/export without re-running SAM3)
+5. Adjust `dilate / erode`, `invert mask` as needed
+6. **Export to inpaint** (switches to Inpaint upload when possible)
+7. Optional: **Unload SAM3** / **Free VRAM**
+
+If no checkpoint is found, the UI shows the expected path (`models/SAM3/sam3.pt`) and HF gated-access notes.
 
 ### Presets → SAM3 prompts
 
@@ -128,8 +135,12 @@ SAM 3 itself is by Meta and uses the **SAM License** — see [facebookresearch/s
 2. 未ロード時の Generate で SAM3 を自動ロード
 3. アニメプリセット（顔・髪・服など）にチェック、または自由入力
 4. コンセプトごとのマスク生成、プレビュー、膨張/収縮、反転、合成
-5. 画像 + マスクを **img2img → Inpaint upload** へ Export
-6. 終わったら Unload / Free VRAM
+5. 生成後に「使用するマスク」で個別ON/OFF（再推論なし）
+6. 画像 + マスクを **img2img → Inpaint upload** へ Export
+7. 終わったら Unload / Free VRAM
+
+自由入力は空でなければ常に使われます（`extra` チェック不要）。
+カンマ区切りの文は別マスクになります（`cat ears, ribbon` → 2枚）。
 
 ## インストール
 
@@ -169,11 +180,14 @@ Hugging Face 上の SAM3 重みは **Gated** です。申請して承認され�
 ## 使い方
 
 1. img2img に画像を置く（拡張内の Image が空なら img2img の画像を自動参照）
-2. プリセットにチェック（既定: `face`）。自由入力例: `cat ears, ribbon, sword`
+2. プリセットにチェック（既定: `face`）。自由入力例: `cat ears, ribbon, sword`（カンマで分割・`extra` チェック不要）
 3. **Generate masks**（未ロード時は自動ロード）
-4. `dilate / erode`、`invert mask` を調整
-5. **Export to inpaint**（可能なら Inpaint upload タブへ切替）
-6. 任意で **Unload SAM3** / **Free VRAM**
+4. **使用するマスク** で個別ON/OFF（プレビュー/Export へ即時反映、再推論なし）
+5. `dilate / erode`、`invert mask` を調整
+6. **Export to inpaint**（可能なら Inpaint upload タブへ切替）
+7. 任意で **Unload SAM3** / **Free VRAM**
+
+チェックポイントが無いときは、配置先パス（`models/SAM3/sam3.pt`）と HF gated 申請の案内を UI に表示します。
 
 ### プリセット → SAM3 プロンプト
 

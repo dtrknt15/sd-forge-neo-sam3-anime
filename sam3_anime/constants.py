@@ -55,7 +55,9 @@ def prompt_for_id(preset_id: str) -> str:
     return ""
 
 
-def label_for_id(preset_id: str) -> str:
+def label_for_id(preset_id: str, labels: dict[str, str] | None = None) -> str:
+    if labels and preset_id in labels:
+        return labels[preset_id]
     for pid, label, _prompt in PRESETS:
         if pid == preset_id:
             return label
@@ -65,16 +67,26 @@ def label_for_id(preset_id: str) -> str:
 def resolve_prompts(
     selected: list[str],
     free_text: str,
-) -> list[tuple[str, str]]:
-    """Return [(id, english_prompt), ...] for selected presets + free text."""
-    result: list[tuple[str, str]] = []
+) -> list[tuple[str, str, str]]:
+    """Return [(id, english_prompt, display_label), ...] for presets + free text.
+
+    Free text is always used when non-empty (extra checkbox optional).
+    Comma-separated items become separate concepts (extra, extra_1, ...).
+    """
+    result: list[tuple[str, str, str]] = []
     for pid in selected or []:
         if pid == "extra":
             continue
         prompt = prompt_for_id(pid)
         if prompt:
-            result.append((pid, prompt))
+            result.append((pid, prompt, label_for_id(pid)))
     free = (free_text or "").strip()
-    if "extra" in (selected or []) and free:
-        result.append(("extra", free))
+    if free:
+        parts = [p.strip() for p in free.replace("、", ",").split(",") if p.strip()]
+        if len(parts) == 1:
+            result.append(("extra", parts[0], parts[0]))
+        else:
+            for i, part in enumerate(parts):
+                cid = "extra" if i == 0 else f"extra_{i}"
+                result.append((cid, part, part))
     return result

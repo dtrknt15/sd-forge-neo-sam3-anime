@@ -96,6 +96,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                 "物体の自動認識一覧はありません。"
                 "Image が空なら img2img の画像を自動参照します。"
                 "未ロード時は Generate が自動ロードします。"
+                " 自由入力はカンマ区切りで複数コンセプトに分割されます（`extra` チェック不要）。"
             )
 
             # --- model row ---
@@ -144,7 +145,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                 elem_id=f"sam3_anime_presets_{tab}",
             )
             free_text = gr.Textbox(
-                label="自由入力 (extra)",
+                label="自由入力（カンマ区切り可・extra チェック不要）",
                 placeholder="例: cat ears, ribbon, sword",
                 elem_id=f"sam3_anime_freetext_{tab}",
             )
@@ -170,6 +171,12 @@ class Sam3AnimeMaskScript(scripts.Script):
             # --- outputs ---
             gallery = gr.Gallery(
                 label="個別マスク", columns=4, height=240, elem_id=f"sam3_anime_gallery_{tab}"
+            )
+            active_masks = gr.CheckboxGroup(
+                label="使用するマスク（生成後に個別ON/OFF）",
+                choices=[],
+                value=[],
+                elem_id=f"sam3_anime_active_{tab}",
             )
             combined_img = gr.Image(label="合成マスク", type="pil", elem_id=f"sam3_anime_combined_{tab}")
             overlay_img = gr.Image(label="オーバーレイ", type="pil", elem_id=f"sam3_anime_overlay_{tab}")
@@ -198,6 +205,9 @@ class Sam3AnimeMaskScript(scripts.Script):
 
             def _do_load(name: str):
                 from sam3_anime import model_manager, vram
+
+                if not name:
+                    return model_manager.missing_checkpoint_hint()
 
                 ok, msg = model_manager.load(name)
                 _log(msg)
@@ -268,30 +278,34 @@ class Sam3AnimeMaskScript(scripts.Script):
                     image = _try_img2img_init()
                 if image is None:
                     return (
-                        [], None, None, None, {},
+                        [], None, None, None, {}, gr.update(choices=[], value=[]),
                         "No image. 拡張内の Image か img2img の init image を使ってください。",
                     )
 
                 used_image = image.convert("RGB")
-                prompts = constants.resolve_prompts(selected or [], free or "")
+                prompt_rows = constants.resolve_prompts(selected or [], free or "")
+                prompts = [(cid, prompt) for cid, prompt, _label in prompt_rows]
+                labels = {cid: label for cid, _prompt, label in prompt_rows}
                 if not prompts:
                     return (
-                        [], None, None, used_image, {},
-                        "プリセットが未選択です。少なくとも1つチェックしてください。",
+                        [], None, None, used_image, {}, gr.update(choices=[], value=[]),
+                        "プリセットか自由入力を1つ以上指定してください。"
+                        " 自由入力のみなら extra チェックは不要です。",
                     )
 
                 use_dummy = False
+                empty_active = gr.update(choices=[], value=[])
                 if not model_manager.is_loaded():
                     if not ckpt_name:
                         return (
-                            [], None, None, used_image, {},
+                            [], None, None, used_image, {}, empty_active,
                             "SAM3 checkpoint が未選択です。ドロップダウンから選んでください。",
                         )
                     _log(f"auto-loading SAM3: {ckpt_name}")
                     ok, load_msg = model_manager.load(ckpt_name)
                     if not ok:
                         return (
-                            [], None, None, used_image, {},
+                            [], None, None, used_image, {}, empty_active,
                             f"SAM3 load failed: {load_msg}",
                         )
                     notes.append(f"auto-loaded: {Path(ckpt_name).name}")
@@ -309,13 +323,13 @@ class Sam3AnimeMaskScript(scripts.Script):
                     last = str(e).strip().splitlines()[-1] if str(e).strip() else repr(e)
                     _log(traceback.format_exc())
                     return (
-                        [], None, None, used_image, {},
+                        [], None, None, used_image, {}, empty_active,
                         f"Generate failed: {last}",
                     )
 
                 if not raw:
                     return (
-                        [], None, None, used_image, {},
+                        [], None, None, used_image, {}, empty_active,
                         "Prompt produced no mask. " + " ".join(notes),
                     )
 
@@ -325,7 +339,13 @@ class Sam3AnimeMaskScript(scripts.Script):
                 )
 
                 for cid, mask in processed.items():
-                    gallery_out.append((mask, f"{constants.label_for_id(cid)} ({cid})"))
+                    gallery_out.append((mask, f"{constants.label_for_id(cid, labels)} ({cid})"))
+
+                active_choices = [
+                    (f"{labels.get(cid, constants.label_for_id(cid, labels))} ({cid})", cid)
+                    for cid in processed.keys()
+                ]
+                active_value = list(processed.keys())
 
                 # combined preview: use combined even if combine checkbox off (display)
                 if combined is not None:
@@ -349,7 +369,15 @@ class Sam3AnimeMaskScript(scripts.Script):
                     except Exception as e:
                         _log(f"auto-unload failed: {e}")
 
-                return gallery_out, combined, overlay, used_image, masks_state, status_msg
+                return (
+                    gallery_out,
+                    combined,
+                    overlay,
+                    used_image,
+                    masks_state,
+                    gr.update(choices=active_choices, value=active_value),
+                    status_msg,
+                )
 
             # JS runs first: extract Forge Canvas base64, return as extra input
             # Gradio 4: _js return value replaces the inputs passed to fn
@@ -381,18 +409,30 @@ class Sam3AnimeMaskScript(scripts.Script):
                     invert,
                     dilate,
                 ],
-                outputs=[gallery, combined_img, overlay_img, store_image, store_masks, status],
+                outputs=[
+                    gallery,
+                    combined_img,
+                    overlay_img,
+                    store_image,
+                    store_masks,
+                    active_masks,
+                    status,
+                ],
                 _js=_js_with_canvas,
             )
 
-            # Re-run postprocess when sliders change after generate
-            def _repost(store_img, store_m, dil_amt, do_invert, do_combine):
+            # Re-run postprocess when sliders / active mask selection change
+            def _repost(store_img, store_m, active, dil_amt, do_invert, do_combine):
                 if not store_m:
-                    return None, None, status_value_keep()
+                    return None, None, None
                 from sam3_anime import postprocess
 
+                selected = [cid for cid in (active or []) if cid in store_m]
+                if not selected:
+                    return [], None, None
+                subset = {cid: store_m[cid] for cid in selected}
                 processed, combined = postprocess.process_pipeline(
-                    store_m, dilate=int(dil_amt), invert=bool(do_invert)
+                    subset, dilate=int(dil_amt), invert=bool(do_invert)
                 )
                 gallery_out = [(m, f"{constants.label_for_id(cid)} ({cid})") for cid, m in processed.items()]
                 overlay = None
@@ -400,23 +440,45 @@ class Sam3AnimeMaskScript(scripts.Script):
                     overlay = postprocess.make_overlay(store_img, combined, "extra", 0.45)
                 return gallery_out, combined, overlay
 
-            def status_value_keep():
-                return gr.update()
+            def _repost_inputs():
+                return [store_image, store_masks, active_masks, dilate, invert, combine]
 
             dilate.release(
                 fn=_repost,
-                inputs=[store_image, store_masks, dilate, invert, combine],
+                inputs=_repost_inputs(),
                 outputs=[gallery, combined_img, overlay_img],
                 show_progress="hidden",
             )
             invert.change(
                 fn=_repost,
-                inputs=[store_image, store_masks, dilate, invert, combine],
+                inputs=_repost_inputs(),
+                outputs=[gallery, combined_img, overlay_img],
+                show_progress="hidden",
+            )
+            active_masks.change(
+                fn=_repost,
+                inputs=_repost_inputs(),
                 outputs=[gallery, combined_img, overlay_img],
                 show_progress="hidden",
             )
 
-            def _prepare_export(store_img, combined, store_m, do_combine):
+            def _on_free_text_change(text, current_presets):
+                free = (text or "").strip()
+                presets = set(current_presets or [])
+                if free:
+                    presets.add("extra")
+                else:
+                    presets.discard("extra")
+                return gr.update(value=sorted(presets))
+
+            free_text.change(
+                fn=_on_free_text_change,
+                inputs=[free_text, presets],
+                outputs=[presets],
+                show_progress="hidden",
+            )
+
+            def _prepare_export(store_img, combined, store_m, do_combine, active):
                 from sam3_anime import forge_export, postprocess
 
                 has_canvas = _INPAINT_BASE is not None and _INPAINT_MASK is not None
@@ -425,13 +487,14 @@ class Sam3AnimeMaskScript(scripts.Script):
                     msg = "Export failed: No image"
                     return (msg, "", gr.update(), gr.update()) if has_canvas else (msg, "")
 
+                # Prefer the displayed combined mask (already filtered by active + dilate/invert)
                 mask = combined
-                if not do_combine and store_m:
-                    mask = combined if combined is not None else postprocess.combine_masks(list(store_m.values()))
                 if mask is None and store_m:
-                    mask = postprocess.combine_masks(list(store_m.values()))
+                    selected = [cid for cid in (active or []) if cid in store_m] or list(store_m.keys())
+                    if selected:
+                        mask = postprocess.combine_masks([store_m[cid] for cid in selected])
                 if mask is None:
-                    msg = "Export failed: No mask"
+                    msg = "Export failed: No mask（使用するマスクが未選択の可能性があります）"
                     return (msg, "", gr.update(), gr.update()) if has_canvas else (msg, "")
 
                 ok, msg, payload, png_path = forge_export.export_to_inpaint(store_img, mask)
@@ -465,7 +528,7 @@ class Sam3AnimeMaskScript(scripts.Script):
 
             export_btn.click(
                 fn=_prepare_export,
-                inputs=[store_image, combined_img, store_masks, combine],
+                inputs=[store_image, combined_img, store_masks, combine, active_masks],
                 outputs=export_outputs,
             ).then(
                 fn=None,
@@ -530,10 +593,11 @@ def _ckpt_warning_text(name: str | None) -> str:
     try:
         from sam3_anime import model_manager
 
-        warn = model_manager.checkpoint_warning(name)
-        return warn
-    except Exception:
-        return ""
+        if not name:
+            return model_manager.missing_checkpoint_hint()
+        return model_manager.checkpoint_warning(name)
+    except Exception as e:
+        return f"checkpoint note unavailable: {e}" if not name else ""
 
 
 def _decode_data_url_to_pil(value: str) -> Image.Image | None:
