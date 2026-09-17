@@ -27,20 +27,27 @@ def _log(msg: str) -> None:
     print(f"{constants.LOG_PREFIX} {msg}", flush=True)
 
 
-# Captured img2img Inpaint upload components (created before script ui()).
+# Captured img2img components (created before script ui()).
 _INPAINT_BASE: Any = None
 _INPAINT_MASK: Any = None
+# Forge Canvas stores images in LogicalImage textboxes (base64 data URLs).
+# Creation order in ui.py: img2img, sketch, inpaint, inpaint_sketch.
+_CANVAS_BACKGROUNDS: list[Any] = []
 
 
 def _capture_inpaint_components(component, **kwargs) -> None:
     global _INPAINT_BASE, _INPAINT_MASK
     eid = getattr(component, "elem_id", None) or kwargs.get("elem_id") or ""
+    classes = list(getattr(component, "elem_classes", None) or kwargs.get("elem_classes") or [])
     if eid == "img_inpaint_base":
         _INPAINT_BASE = component
         _log("captured img_inpaint_base")
     elif eid == "img_inpaint_mask":
         _INPAINT_MASK = component
         _log("captured img_inpaint_mask")
+    elif "logical_image_background" in classes:
+        _CANVAS_BACKGROUNDS.append(component)
+        _log(f"captured canvas background #{len(_CANVAS_BACKGROUNDS)} ({eid})")
 
 
 script_callbacks.on_after_component(_capture_inpaint_components)
@@ -87,6 +94,8 @@ class Sam3AnimeMaskScript(scripts.Script):
             gr.Markdown(
                 "v1 はアニメ用プリセットを SAM3 のテキストプロンプトに変換して切るだけです。"
                 "物体の自動認識一覧はありません。"
+                "Image が空なら img2img の画像を自動参照します。"
+                "未ロード時は Generate が自動ロードします。"
             )
 
             # --- model row ---
@@ -168,6 +177,8 @@ class Sam3AnimeMaskScript(scripts.Script):
             # Hidden store: processed image for export / re-postprocess
             store_image = gr.State(None)
             store_masks = gr.State({})  # {id: PIL L} after last generate (pre postprocess)
+            # JS → Python transfer for Forge Canvas image (base64 data URL)
+            canvas_b64 = gr.Textbox(value="", visible=False, elem_id=f"sam3_anime_canvas_b64_{tab}")
 
             with gr.Row():
                 export_btn = gr.Button("Export to inpaint", elem_id=f"sam3_anime_export_{tab}")
@@ -230,6 +241,8 @@ class Sam3AnimeMaskScript(scripts.Script):
 
             def _generate(
                 image,
+                canvas_data,
+                ckpt_name,
                 selected,
                 free,
                 thr,
@@ -247,6 +260,10 @@ class Sam3AnimeMaskScript(scripts.Script):
                 used_image = None
                 notes: list[str] = []
 
+                if image is None and canvas_data:
+                    image = _decode_data_url_to_pil(canvas_data)
+                    if image is not None:
+                        notes.append("img2img canvas を使用")
                 if image is None:
                     image = _try_img2img_init()
                 if image is None:
@@ -265,11 +282,19 @@ class Sam3AnimeMaskScript(scripts.Script):
 
                 use_dummy = False
                 if not model_manager.is_loaded():
-                    # Spec: clear error when not loaded. Dummy only if no ckpt and user forces via env.
-                    return (
-                        [], None, None, used_image, {},
-                        "SAM3 not loaded. Load SAM3 を押してください。",
-                    )
+                    if not ckpt_name:
+                        return (
+                            [], None, None, used_image, {},
+                            "SAM3 checkpoint が未選択です。ドロップダウンから選んでください。",
+                        )
+                    _log(f"auto-loading SAM3: {ckpt_name}")
+                    ok, load_msg = model_manager.load(ckpt_name)
+                    if not ok:
+                        return (
+                            [], None, None, used_image, {},
+                            f"SAM3 load failed: {load_msg}",
+                        )
+                    notes.append(f"auto-loaded: {Path(ckpt_name).name}")
 
                 try:
                     raw, skipped = infer.generate_masks(
@@ -326,10 +351,32 @@ class Sam3AnimeMaskScript(scripts.Script):
 
                 return gallery_out, combined, overlay, used_image, masks_state, status_msg
 
+            # Step 1: JS extracts Forge Canvas image into hidden textbox
+            # Step 2: Python generate reads it as fallback when extension Image is empty
+            _js_fetch_canvas = (
+                "() => {"
+                " try {"
+                "  const root = (typeof gradioApp === 'function') ? gradioApp() : document;"
+                "  const areas = root.querySelectorAll('.logical_image_background textarea');"
+                "  let data = '';"
+                "  for (const ta of areas) {"
+                "    if (ta.value && ta.value.startsWith('data:image/')) { data = ta.value; break; }"
+                "  }"
+                "  return data;"
+                " } catch (e) { return ''; }"
+                "}"
+            )
             generate_btn.click(
+                fn=None,
+                _js=_js_fetch_canvas,
+                outputs=[canvas_b64],
+                queue=False,
+            ).then(
                 fn=_generate,
                 inputs=[
                     input_image,
+                    canvas_b64,
+                    ckpt,
                     presets,
                     free_text,
                     threshold,
@@ -492,6 +539,54 @@ def _ckpt_warning_text(name: str | None) -> str:
         return ""
 
 
+def _decode_data_url_to_pil(value: str) -> Image.Image | None:
+    """Decode a base64 data URL (Forge Canvas LogicalImage value) to PIL."""
+    if not value or not isinstance(value, str):
+        return None
+    if not value.startswith("data:image/"):
+        return None
+    try:
+        import base64
+        import io
+
+        # data:image/png;base64,xxxx
+        _, _, b64 = value.partition(",")
+        if not b64:
+            return None
+        raw = base64.b64decode(b64)
+        img = Image.open(io.BytesIO(raw))
+        return img.convert("RGB")
+    except Exception as e:
+        _log(f"data-url decode failed: {e}")
+        return None
+
+
 def _try_img2img_init() -> Image.Image | None:
-    """Best-effort: no private API. Return None (UI error) if no image."""
+    """Best-effort: read img2img / sketch / inpaint canvas image if extension Image is empty.
+
+    Forge Canvas LogicalImage components hold base64 data URLs.
+    Creation order: img2img, sketch, inpaint, inpaint_sketch — first non-empty wins.
+    """
+    for comp in _CANVAS_BACKGROUNDS:
+        try:
+            value = getattr(comp, "value", None)
+            if value is None:
+                continue
+            if isinstance(value, Image.Image):
+                return value.convert("RGB")
+            if isinstance(value, str):
+                img = _decode_data_url_to_pil(value)
+                if img is not None:
+                    return img
+            # numpy path (LogicalImage(numpy=True) not used by default)
+            try:
+                import numpy as np
+
+                arr = np.asarray(value)
+                if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+                    return Image.fromarray(arr[..., :3], mode="RGB")
+            except Exception:
+                pass
+        except Exception as e:
+            _log(f"canvas background read failed: {e}")
     return None
