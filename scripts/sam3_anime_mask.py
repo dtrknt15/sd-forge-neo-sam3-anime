@@ -351,10 +351,10 @@ class Sam3AnimeMaskScript(scripts.Script):
 
                 return gallery_out, combined, overlay, used_image, masks_state, status_msg
 
-            # Step 1: JS extracts Forge Canvas image into hidden textbox
-            # Step 2: Python generate reads it as fallback when extension Image is empty
-            _js_fetch_canvas = (
-                "() => {"
+            # JS runs first: extract Forge Canvas base64, return as extra input
+            # Gradio 4: _js return value replaces the inputs passed to fn
+            _js_with_canvas = (
+                "(img, canvas, ckpt, presets, free, thr, mside, combine, invert, dilate) => {"
                 " try {"
                 "  const root = (typeof gradioApp === 'function') ? gradioApp() : document;"
                 "  const areas = root.querySelectorAll('.logical_image_background textarea');"
@@ -362,16 +362,12 @@ class Sam3AnimeMaskScript(scripts.Script):
                 "  for (const ta of areas) {"
                 "    if (ta.value && ta.value.startsWith('data:image/')) { data = ta.value; break; }"
                 "  }"
-                "  return data;"
-                " } catch (e) { return ''; }"
+                "  if (!img && data) canvas = data;"
+                " } catch (e) {}"
+                " return [img, canvas, ckpt, presets, free, thr, mside, combine, invert, dilate];"
                 "}"
             )
             generate_btn.click(
-                fn=None,
-                _js=_js_fetch_canvas,
-                outputs=[canvas_b64],
-                queue=False,
-            ).then(
                 fn=_generate,
                 inputs=[
                     input_image,
@@ -386,6 +382,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                     dilate,
                 ],
                 outputs=[gallery, combined_img, overlay_img, store_image, store_masks, status],
+                _js=_js_with_canvas,
             )
 
             # Re-run postprocess when sliders change after generate
