@@ -15,8 +15,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .constants import LOG_PREFIX
 from . import vram
+from .constants import LOG_PREFIX
 
 _STATE: dict[str, Any] = {
     "model": None,
@@ -215,8 +215,8 @@ def load(ckpt_name: str | None = None) -> tuple[bool, str]:
         return False, f"torch not available: {e}"
 
     try:
-        from sam3.model_builder import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
+        from sam3.model_builder import build_sam3_image_model
     except Exception as e:
         return False, f"sam3 package not installed: {e}"
 
@@ -265,7 +265,3 @@ def load(ckpt_name: str | None = None) -> tuple[bool, str]:
 
 def get_processor() -> Any:
     return _STATE["processor"]
-
-
-def get_state() -> dict[str, Any]:
-    return _STATE

@@ -1,6 +1,13 @@
-"""VRAM status and cache helpers (RTX 3090 / float16 target)."""
+"""VRAM status and cache helpers for CUDA memory reporting/freeing.
+
+Note: SAM3 weights are intentionally kept float32 (see model_manager.load);
+these helpers never touch dtypes themselves.
+"""
 
 from __future__ import annotations
+
+import contextlib
+import gc
 
 from .constants import LOG_PREFIX
 
@@ -44,18 +51,14 @@ def status_text(loaded: bool, ckpt_name: str | None = None) -> str:
 
 
 def free_cache() -> None:
-    import gc
-
     try:
         import torch
 
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            try:
+            with contextlib.suppress(Exception):
                 torch.cuda.ipc_collect()
-            except Exception:
-                pass
             torch.cuda.empty_cache()
     except Exception as e:
         print(f"{LOG_PREFIX} free_cache failed: {e}", flush=True)
@@ -68,7 +71,3 @@ def cuda_available() -> bool:
         return bool(torch.cuda.is_available())
     except Exception:
         return False
-
-
-def device_string() -> str:
-    return "cuda:0" if cuda_available() else "cpu"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import numpy as np
 from PIL import Image
@@ -94,26 +94,6 @@ def make_overlay(image: Image.Image, mask: Image.Image, concept_id: str = "extra
     if overlay_img.size != base.size:
         overlay_img = overlay_img.resize(base.size, Image.NEAREST)
     return Image.alpha_composite(base, overlay_img).convert("RGB")
-
-
-def dummy_mask(size: tuple[int, int], preset_index: int = 0) -> Image.Image:
-    """White rectangle dummy for UI testing without SAM3."""
-    w, h = size
-    mask = Image.new("L", (w, h), 0)
-    from PIL import ImageDraw
-
-    draw = ImageDraw.Draw(mask)
-    # place rectangles in a grid-ish pattern so multiple presets differ
-    cols = 4
-    idx = max(0, preset_index)
-    cx = (idx % cols) * (w // cols) + w // 16
-    cy = (idx // cols) * (h // 4) + h // 8
-    rw = max(8, w // 6)
-    rh = max(8, h // 6)
-    x2 = min(w - 1, cx + rw)
-    y2 = min(h - 1, cy + rh)
-    draw.rectangle([cx, cy, x2, y2], fill=255)
-    return mask
 
 
 def process_pipeline(

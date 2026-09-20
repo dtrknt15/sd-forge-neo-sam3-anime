@@ -8,8 +8,8 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from . import model_manager
 from .constants import LOG_PREFIX
-from . import model_manager, postprocess
 
 
 def _fit_image(image: Image.Image, max_side: int) -> Image.Image:
@@ -43,11 +43,7 @@ def _masks_from_output(output: Any) -> list[np.ndarray]:
     """Extract list of HxW uint8 masks (0/255) from SAM3 processor state."""
     if output is None:
         return []
-    masks = None
-    if isinstance(output, dict):
-        masks = output.get("masks")
-    else:
-        masks = getattr(output, "masks", None)
+    masks = output.get("masks") if isinstance(output, dict) else getattr(output, "masks", None)
     if masks is None:
         return []
     try:
@@ -114,20 +110,40 @@ def _or_masks(masks: list[np.ndarray], shape: tuple[int, int]) -> np.ndarray | N
     return acc if acc.any() else None
 
 
-def _state_to_mask(state: Any, threshold: float) -> Image.Image | None:
+def _state_to_mask(state: Any, threshold: float) -> tuple[Image.Image | None, str | None]:
+    """Extract combined mask + threshold-filter note from SAM3 processor state.
+
+    Returns (mask_L_or_None, note_or_None). The note explains when the score
+    threshold filter had NO effect so the user can notice it in the status:
+    - output carries no scores (filter cannot run)
+    - score count != mask count (filter cannot align)
+    - threshold excluded every candidate (fallback: all masks are used)
+    """
     masks = _masks_from_output(state)
     if not masks:
-        return None
+        return None, None
     scores = _scores_from_output(state)
-    if scores is not None and len(scores) == len(masks):
+    note: str | None = None
+    if scores is None:
+        note = "score threshold 無効: 出力にスコアがありません"
+    elif len(scores) != len(masks):
+        note = (
+            f"score threshold 無効: スコア数({len(scores)})とマスク数({len(masks)})が不一致"
+        )
+    else:
         keep = [masks[i] for i, s in enumerate(scores) if float(s) >= float(threshold)]
         if keep:
             masks = keep
+        else:
+            note = (
+                f"score threshold={threshold:g} が全候補({len(masks)})を除外したため"
+                "全マスクを使用しました（フィルタ無効）"
+            )
     h, w = masks[0].shape[:2]
     acc = _or_masks(masks, (h, w))
     if acc is None:
-        return None
-    return Image.fromarray(acc, mode="L")
+        return None, note
+    return Image.fromarray(acc, mode="L"), note
 
 
 def _run_concepts(
@@ -135,32 +151,44 @@ def _run_concepts(
     image: Image.Image,
     prompts: list[tuple[str, str]],
     threshold: float,
-) -> tuple[dict[str, Image.Image], list[str]]:
-    """set_image once, then sequential set_text_prompt with kept state."""
+) -> tuple[dict[str, Image.Image], list[str], list[str]]:
+    """set_image once, then sequential set_text_prompt with kept state.
+
+    Returns (masks, skipped_prompts, threshold_notes).
+    threshold_notes are deduplicated messages telling the user when the
+    score threshold filter had no effect for a concept.
+    """
     result: dict[str, Image.Image] = {}
     skipped: list[str] = []
+    threshold_notes: list[str] = []
 
     with _autocast_ctx():
         state = processor.set_image(image)
 
     for cid, prompt in prompts:
+        note: str | None = None
         try:
             with _autocast_ctx():
                 # Official: set_text_prompt(prompt=..., state=...)
                 state = processor.set_text_prompt(prompt=prompt, state=state)
-            mask = _state_to_mask(state, threshold)
-        except Exception as e:
+            mask, note = _state_to_mask(state, threshold)
+        except Exception:
             # Fallback: full re-run (image + text) if state reuse fails
             try:
                 with _autocast_ctx():
                     state2 = processor.set_image(image)
                     state2 = processor.set_text_prompt(prompt=prompt, state=state2)
-                mask = _state_to_mask(state2, threshold)
+                mask, note = _state_to_mask(state2, threshold)
             except Exception as e2:
                 last = str(e2).strip().splitlines()[-1] if str(e2).strip() else repr(e2)
                 print(f"{LOG_PREFIX} prompt failed: {prompt} — {last}", flush=True)
                 skipped.append(f"Prompt failed: {prompt}")
                 continue
+
+        if note:
+            if note not in threshold_notes:
+                threshold_notes.append(note)
+            print(f"{LOG_PREFIX} {prompt}: {note}", flush=True)
 
         if mask is None:
             print(f"{LOG_PREFIX} Prompt produced no mask: {prompt}", flush=True)
@@ -168,7 +196,7 @@ def _run_concepts(
             continue
         result[cid] = mask
 
-    return result, skipped
+    return result, skipped, threshold_notes
 
 
 def generate_masks(
@@ -177,18 +205,15 @@ def generate_masks(
     *,
     max_side: int = 1024,
     threshold: float = 0.5,
-    use_dummy: bool = False,
 ) -> tuple[dict[str, Image.Image], list[str]]:
-    """Return ({id: mask_L at original size}, skipped_prompt_notes)."""
+    """Return ({id: mask_L at original size}, notes).
+
+    notes combines skipped prompts and score-threshold notices.
+    """
     image = image.convert("RGB")
     orig_size = image.size
     skipped: list[str] = []
     result: dict[str, Image.Image] = {}
-
-    if use_dummy:
-        for i, (cid, _prompt) in enumerate(prompts):
-            result[cid] = postprocess.dummy_mask(orig_size, i)
-        return result, skipped
 
     if not model_manager.is_loaded():
         raise RuntimeError("SAM3 not loaded")
@@ -198,11 +223,11 @@ def generate_masks(
         raise RuntimeError("SAM3 not loaded")
 
     fitted = _fit_image(image, int(max_side))
-    raw, skipped = _run_concepts(processor, fitted, prompts, float(threshold))
+    raw, skipped, threshold_notes = _run_concepts(processor, fitted, prompts, float(threshold))
 
     for cid, mask in raw.items():
         if mask.size != orig_size:
             mask = mask.resize(orig_size, Image.NEAREST)
         result[cid] = mask
 
-    return result, skipped
+    return result, skipped + threshold_notes

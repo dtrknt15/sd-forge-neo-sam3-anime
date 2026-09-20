@@ -6,6 +6,7 @@ venv/
 .env
 .idea/
 .vscode/
+.freebuff/
 *.safetensors
 *.pt
 *.pth

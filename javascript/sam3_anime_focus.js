@@ -29,7 +29,7 @@ function sam3AnimeFocusInpaintUpload() {
     } catch (e) {}
 
     try {
-      const mode = root.querySelector("#mode_img2img") || root.getElementById("mode_img2img");
+      const mode = root.querySelector("#mode_img2img");
       if (mode) {
         const modeBtns = mode.querySelectorAll("button");
         // img2img, Sketch, Inpaint, Inpaint sketch, Inpaint upload, Batch

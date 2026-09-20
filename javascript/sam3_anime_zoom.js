@@ -46,10 +46,4 @@
   } else {
     document.addEventListener("click", onDocClick, true);
   }
-
-  // Re-bind after Gradio re-renders
-  const obs = new MutationObserver(function () {
-    ensureModal();
-  });
-  obs.observe(document.documentElement, { childList: true, subtree: false });
 })();

@@ -1,0 +1,21 @@
+# Lint config for the SAM3 Anime Mask extension.
+# Heavy imports inside functions are intentional (UI must load without
+# torch/sam3 installed), so PLC0415 is off.
+target-version = "py310"
+# 120: existing codebase embeds long JS one-liners in Python strings
+line-length = 120
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+    "PLC0415", # import not at top of file — by design, see module docstrings
+    "E401",    # multiple imports on one line (scripts insert sys.path first)
+]
+
+[lint.per-file-ignores]
+# scripts/sam3_anime_mask.py registers callbacks at import time by design
+"scripts/sam3_anime_mask.py" = ["E402"]
+"tests/*" = ["SIM117"]
+
+[format]
+line-ending = "lf"

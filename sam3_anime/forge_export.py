@@ -34,29 +34,41 @@ def save_combined_mask(mask: Image.Image, directory: str | Path | None = None) -
     return path
 
 
+def build_mask_rgba(mask: Image.Image) -> Image.Image:
+    """Return the mask as a fully OPAQUE RGBA image (white = edit region).
+
+    Opaque is intentional:
+    - Forge Neo create_binary_mask reads the LUMINANCE when the alpha channel
+      has no transparency, so RGB carries the mask reliably.
+    - Transparent pixels render as the UI background (white) in the Inpaint
+      upload Mask preview, which made the whole mask look all-white.
+    """
+    m = to_inpaint_mask(mask)
+    return Image.merge("RGBA", (m, m, m, Image.new("L", m.size, 255)))
+
+
 def build_inpaint_upload_payload(image: Image.Image, mask: Image.Image) -> tuple[str, str]:
-    """Return (image_b64, mask_b64). Mask is grayscale white=fill."""
+    """Return (image_b64, mask_b64). Mask is opaque RGBA (white = edit)."""
     img = image.convert("RGB")
     m = to_inpaint_mask(mask)
     if m.size != img.size:
         m = m.resize(img.size, Image.NEAREST)
-    return _pil_to_b64_png(img), _pil_to_b64_png(m)
+    return _pil_to_b64_png(img), _pil_to_b64_png(build_mask_rgba(m))
 
 
 def build_inpaint_pair(
     image: Image.Image, mask: Image.Image
 ) -> tuple[Image.Image, Image.Image]:
-    """Return (init RGB, mask L) ready for img_inpaint_base / img_inpaint_mask.
+    """Return (init RGB, mask RGBA) ready for img_inpaint_base / img_inpaint_mask.
 
-    Inpaint upload mask component is RGBA; white = inpaint region.
+    The mask is fully opaque so the Inpaint upload preview shows proper
+    black/white and Forge reads it via luminance (white = edit region).
     """
     img = image.convert("RGB")
     m = to_inpaint_mask(mask)
     if m.size != img.size:
         m = m.resize(img.size, Image.NEAREST)
-    # WebUI inpaint upload expects RGBA mask; keep white on transparent black
-    mask_rgba = Image.merge("RGBA", (m, m, m, Image.new("L", m.size, 255)))
-    return img, mask_rgba
+    return img, build_mask_rgba(m)
 
 
 def export_to_inpaint(

@@ -1,0 +1,4 @@
+# Dev/test dependencies (not installed by the extension itself).
+# Runtime deps are provided by Forge Neo; see install.py for sam3.
+pytest>=8
+ruff>=0.8

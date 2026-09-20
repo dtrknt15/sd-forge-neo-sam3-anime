@@ -14,8 +14,8 @@ Anime-oriented inpaint mask helper for **Stable Diffusion WebUI Forge Neo** (Gra
 1. Auto-reads img2img init image when extension Image is empty
 2. Auto-loads SAM3 on Generate if not already loaded
 3. Check anime presets (face / hair / clothes / …) or add free-text concepts
-4. Generate per-concept masks, preview, dilate/erode, invert, combine
-5. After generate, toggle which concept masks are used (no re-inference)
+4. Generate per-concept masks, preview, dilate/erode, invert
+5. After generate, toggle which concept masks are used (no re-inference); active masks are combined (OR) automatically
 6. Export image + mask to **img2img → Inpaint upload**
 7. Unload / Free VRAM when done
 
@@ -31,7 +31,13 @@ Restart WebUI
 Open the accordion → Load SAM3
 ```
 
-`install.py` tries to install the official package (failure does **not** break WebUI):
+`install.py` tries to install the official package **safely** (failure does **not** break WebUI):
+
+- Checks **Python 3.12+** and **torch 2.7+** first; skips install (with a console note) if not met — it never upgrades torch or other packages behind your back
+- Installs with `--no-deps` so existing torch/numpy/etc. in the WebUI environment are **left untouched**
+- Verifies `import sam3` afterwards and prints guidance if a runtime dependency is missing
+
+Manual install (pulls in its own deps — run inside the WebUI venv):
 
 ```bash
 pip install git+https://github.com/facebookresearch/sam3.git
@@ -66,6 +72,8 @@ Links:
 4. Toggle **使用するマスク** to include/exclude individual concept masks (updates preview/export without re-running SAM3)
 5. Adjust `dilate / erode`, `invert mask` as needed
 6. **Export to inpaint** — always targets **img2img → Inpaint upload**
+   - Mask convention: **white = edit region** (dual-encoded in RGB and alpha)
+   - If the region looks inverted in the Inpaint upload preview, also check `inpainting_mask_invert` (Settings)
    - On **img2img**: Export is primary
    - On **txt2img**: Download mask PNG is primary; Export switches to img2img Inpaint upload
 7. Optional: **Unload SAM3** / **Free VRAM**
@@ -136,8 +144,8 @@ SAM 3 itself is by Meta and uses the **SAM License** — see [facebookresearch/s
 1. 拡張内の Image が空なら img2img の画像を自動参照
 2. 未ロード時の Generate で SAM3 を自動ロード
 3. アニメプリセット（顔・髪・服など）にチェック、または自由入力
-4. コンセプトごとのマスク生成、プレビュー、膨張/収縮、反転、合成
-5. 生成後に「使用するマスク」で個別ON/OFF（再推論なし）
+4. コンセプトごとのマスク生成、プレビュー、膨張/収縮、反転
+5. 生成後に「使用するマスク」で個別ON/OFF（再推論なし）。使用中のマスクは自動的に合成（OR）されます
 6. 画像 + マスクを **img2img → Inpaint upload** へ Export
 7. 終わったら Unload / Free VRAM
 
@@ -153,7 +161,13 @@ WebUI 再起動
 Accordion から Load SAM3
 ```
 
-`install.py` が公式パッケージのインストールを試みます（失敗しても WebUI は起動します）:
+`install.py` が公式パッケージを**安全に**インストールしようとします（失敗しても WebUI は起動します）:
+
+- 事前に **Python 3.12+** と **torch 2.7+** を確認。未達ならインストールをスキップ（コンソールに案内）— 既存の torch 等を勝手に更新しません
+- `--no-deps` でインストールするため、WebUI 環境の torch / numpy 等は**変更されません**
+- 導入後に `import sam3` を検証し、依存が不足していた場合は対処方法をコンソールに表示
+
+手動インストール（依存も一緒に入ります。WebUI の venv 内で実行してください）:
 
 ```bash
 pip install git+https://github.com/facebookresearch/sam3.git
@@ -187,6 +201,8 @@ Hugging Face 上の SAM3 重みは **Gated** です。申請して承認され�
 4. **使用するマスク** で個別ON/OFF（プレビュー/Export へ即時反映、再推論なし）
 5. `dilate / erode`、`invert mask` を調整
 6. **Export to inpaint** — 送信先は常に **img2img → Inpaint upload**
+   - マスク規約: **白 = 編集領域**（不透明 RGBA。プレビューは黒/白で表示されます）
+   - Inpaint upload のプレビューで白黒が逆に見える場合は設定の `inpainting_mask_invert` も確認
    - **img2img** タブ: Export が主ボタン
    - **txt2img** タブ: マスク PNG Download が主。Export を押すと img2img Inpaint upload へ自動切替
 7. 任意で **Unload SAM3** / **Free VRAM**
