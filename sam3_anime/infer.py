@@ -127,9 +127,7 @@ def _state_to_mask(state: Any, threshold: float) -> tuple[Image.Image | None, st
     if scores is None:
         note = "score threshold 無効: 出力にスコアがありません"
     elif len(scores) != len(masks):
-        note = (
-            f"score threshold 無効: スコア数({len(scores)})とマスク数({len(masks)})が不一致"
-        )
+        note = f"score threshold 無効: スコア数({len(scores)})とマスク数({len(masks)})が不一致"
     else:
         keep = [masks[i] for i, s in enumerate(scores) if float(s) >= float(threshold)]
         if keep:
@@ -151,21 +149,29 @@ def _run_concepts(
     image: Image.Image,
     prompts: list[tuple[str, str]],
     threshold: float,
-) -> tuple[dict[str, Image.Image], list[str], list[str]]:
+) -> tuple[dict[str, Image.Image], list[str], list[str], bool]:
     """set_image once, then sequential set_text_prompt with kept state.
 
-    Returns (masks, skipped_prompts, threshold_notes).
+    Returns (masks, skipped_prompts, threshold_notes, cancelled).
     threshold_notes are deduplicated messages telling the user when the
     score threshold filter had no effect for a concept.
     """
     result: dict[str, Image.Image] = {}
     skipped: list[str] = []
     threshold_notes: list[str] = []
+    cancelled = False
 
     with _autocast_ctx():
         state = processor.set_image(image)
 
     for cid, prompt in prompts:
+        if model_manager.is_cancel_requested():
+            # No GPU work here — just mark every remaining prompt as skipped
+            # so the status line shows exactly what was not run.
+            print(f"{LOG_PREFIX} cancelled before prompt: {prompt}", flush=True)
+            skipped.append(f"Cancelled: {prompt}")
+            cancelled = True
+            continue
         note: str | None = None
         try:
             with _autocast_ctx():
@@ -196,7 +202,7 @@ def _run_concepts(
             continue
         result[cid] = mask
 
-    return result, skipped, threshold_notes
+    return result, skipped, threshold_notes, cancelled
 
 
 def generate_masks(
@@ -205,14 +211,29 @@ def generate_masks(
     *,
     max_side: int = 1024,
     threshold: float = 0.5,
-) -> tuple[dict[str, Image.Image], list[str]]:
-    """Return ({id: mask_L at original size}, notes).
+) -> tuple[dict[str, Image.Image], list[str], bool]:
+    """Return ({id: mask_L at original size}, notes, cancelled).
 
     notes combines skipped prompts and score-threshold notices.
+    When cancelled is True the result contains only the concepts completed
+    before the cancel request; notes includes one Cancelled: entry per
+    remaining prompt.
     """
     image = image.convert("RGB")
-    orig_size = image.size
-    skipped: list[str] = []
+
+    # Block Load/Unload/Free VRAM (and a concurrent second generate) while
+    # inference is running; released in a finally block on any error path.
+    with model_manager.inference_running():
+        return _generate_locked(image, prompts, max_side=max_side, threshold=threshold)
+
+
+def _generate_locked(
+    image: Image.Image,
+    prompts: list[tuple[str, str]],
+    *,
+    max_side: int,
+    threshold: float,
+) -> tuple[dict[str, Image.Image], list[str], bool]:
     result: dict[str, Image.Image] = {}
 
     if not model_manager.is_loaded():
@@ -222,12 +243,13 @@ def generate_masks(
     if processor is None:
         raise RuntimeError("SAM3 not loaded")
 
+    orig_size = image.size
     fitted = _fit_image(image, int(max_side))
-    raw, skipped, threshold_notes = _run_concepts(processor, fitted, prompts, float(threshold))
+    raw, skipped, threshold_notes, cancelled = _run_concepts(processor, fitted, prompts, threshold)
 
     for cid, mask in raw.items():
         if mask.size != orig_size:
             mask = mask.resize(orig_size, Image.NEAREST)
         result[cid] = mask
 
-    return result, skipped + threshold_notes
+    return result, skipped + threshold_notes, cancelled

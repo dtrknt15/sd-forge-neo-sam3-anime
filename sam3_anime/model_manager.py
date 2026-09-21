@@ -1,5 +1,10 @@
 """Global singleton SAM3 model/processor management.
 
+Thread safety: load/unload are serialized by _LOCK and refused while a
+generation is in flight (see inference_running), so model weights are never
+dropped or swapped mid-inference (which previously caused OOM / crashes when
+Unload or Free VRAM was clicked during Generate).
+
 Official builder (facebookresearch/sam3):
   build_sam3_image_model(checkpoint_path=..., device="cuda", load_from_HF=False)
   Sam3Processor(model)
@@ -10,8 +15,10 @@ safetensors needs a separate load path.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +31,54 @@ _STATE: dict[str, Any] = {
     "ckpt_path": None,
     "device": "cuda",
     "dtype": None,
+    "busy": False,
 }
+
+# Set by the Cancel button, polled by infer at concept boundaries.
+# Guarded by _LOCK; reset by inference_running() on entry/exit.
+_CANCEL_EVENT = threading.Event()
+
+# Serializes load/unload and guards them against in-flight inference.
+# RLock so _load_locked() can call unload() on the same thread.
+_LOCK = threading.RLock()
+
+_BUSY_MSG = (
+    "SAM3 is busy (loading or generating) — 生成/ロード中のため実行できません。"
+    " しばらく待ってからもう一度お試しください。"
+)
+
+
+@contextlib.contextmanager
+def inference_running():
+    """Mark a SAM3 generation as in-flight (blocks concurrent load/unload)."""
+    with _LOCK:
+        if _STATE["busy"]:
+            raise RuntimeError("another SAM3 generation is already running")
+        _STATE["busy"] = True
+        _CANCEL_EVENT.clear()
+    try:
+        yield
+    finally:
+        with _LOCK:
+            _STATE["busy"] = False
+            _CANCEL_EVENT.clear()
+
+
+def request_cancel() -> str:
+    """Ask the running generation to stop at the next concept boundary.
+
+    Returns a UI-safe message describing what happened.
+    """
+    with _LOCK:
+        if not _STATE["busy"]:
+            return "SAM3 is not generating — nothing to cancel."
+        _CANCEL_EVENT.set()
+        return "Cancel requested — stopping after the current prompt..."
+
+
+def is_cancel_requested() -> bool:
+    return _CANCEL_EVENT.is_set()
+
 
 _CKPT_EXTS = {".pt", ".pth", ".safetensors"}
 _OFFICIAL_CKPT_NAMES = ("sam3.pt", "sam3.1_multiplex.pt", "sam3.1.pt")
@@ -69,8 +123,17 @@ def list_checkpoints() -> list[str]:
         for p in sorted(folder.iterdir()):
             if p.is_file() and p.suffix.lower() in _CKPT_EXTS and p.name not in names:
                 names.append(p.name)
-    # Official facebookresearch checkpoints first (sam3.pt is the safe default)
-    names.sort(key=lambda n: (0 if n in _OFFICIAL_CKPT_NAMES else 1, n.lower()))
+
+    # Official facebookresearch checkpoints first, in preference order
+    # (sam3.pt is the safe default), then everything else alphabetically.
+    def _sort_key(n: str) -> tuple[int, str]:
+        try:
+            rank = _OFFICIAL_CKPT_NAMES.index(n)
+        except ValueError:
+            rank = len(_OFFICIAL_CKPT_NAMES)
+        return (rank, n.lower())
+
+    names.sort(key=_sort_key)
     return names
 
 
@@ -135,20 +198,34 @@ def current_ckpt() -> str | None:
     return _STATE["ckpt_path"]
 
 
-def unload() -> None:
-    _STATE["model"] = None
-    _STATE["processor"] = None
-    _STATE["ckpt_path"] = None
-    _STATE["dtype"] = None
-    gc.collect()
-    vram.free_cache()
-    print(f"{LOG_PREFIX} unloaded SAM3", flush=True)
+def unload() -> tuple[bool, str]:
+    """Unload SAM3. Refused while a generation is in flight.
+
+    Returns (ok, message). Message is UI-safe.
+    """
+    if not _LOCK.acquire(blocking=False):
+        return False, _BUSY_MSG
+    try:
+        if _STATE["busy"]:
+            return False, _BUSY_MSG
+        _STATE["model"] = None
+        _STATE["processor"] = None
+        _STATE["ckpt_path"] = None
+        _STATE["dtype"] = None
+        gc.collect()
+        vram.free_cache()
+        print(f"{LOG_PREFIX} unloaded SAM3", flush=True)
+        return True, "unloaded SAM3"
+    finally:
+        _LOCK.release()
 
 
-def free_vram() -> None:
-    unload()
-    vram.free_cache()
-    print(f"{LOG_PREFIX} free VRAM done", flush=True)
+def free_vram() -> tuple[bool, str]:
+    ok, msg = unload()
+    if ok:
+        vram.free_cache()
+        print(f"{LOG_PREFIX} free VRAM done", flush=True)
+    return ok, msg
 
 
 def _remap_image_ckpt(raw: dict) -> dict:
@@ -193,7 +270,22 @@ def _load_safetensors_into(model: Any, path: Path) -> None:
 
 
 def load(ckpt_name: str | None = None) -> tuple[bool, str]:
-    """Load SAM3. Returns (ok, message). Message is UI-safe."""
+    """Load SAM3. Returns (ok, message). Message is UI-safe.
+
+    Refuses while a generation is in flight or another load/unload is running,
+    so a double-click can no longer produce a half-initialized model.
+    """
+    if not _LOCK.acquire(blocking=False):
+        return False, _BUSY_MSG
+    try:
+        return _load_locked(ckpt_name)
+    finally:
+        _LOCK.release()
+
+
+def _load_locked(ckpt_name: str | None) -> tuple[bool, str]:
+    if _STATE["busy"]:
+        return False, _BUSY_MSG
     if not vram.cuda_available():
         return False, "CUDA not available"
 
@@ -207,7 +299,9 @@ def load(ckpt_name: str | None = None) -> tuple[bool, str]:
         return True, f"already loaded: {path.name}"
 
     if is_loaded():
-        unload()
+        ok, msg = unload()
+        if not ok:
+            return False, msg
 
     try:
         import torch

@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+from itertools import count
 
 import numpy as np
 from PIL import Image
@@ -82,7 +83,25 @@ def test_export_to_inpaint_round_trip(tmp_path):
     assert arr[0, 0, 0] == 0 and arr[0, 0, 3] == 255
 
 
-def test_save_combined_mask_fixed_filename(tmp_path):
+def test_save_combined_mask_timestamped_filename(tmp_path):
     mask = Image.new("L", (4, 4), 255)
     path = forge_export.save_combined_mask(mask, tmp_path)
-    assert path.name == "sam3_anime_combined_mask.png"
+    # timestamped name prevents overwrite races between concurrent sessions
+    assert path.name.startswith("sam3_anime_combined_mask_")
+    assert path.name.endswith(".png")
+
+
+def test_save_combined_mask_timestamped_name_is_unique(tmp_path):
+    import time
+
+    from sam3_anime import forge_export as fe
+
+    mask = Image.new("L", (4, 4), 255)
+    fe._NAME_COUNTER = count(10_000)  # reset/force distinct sequence numbers
+    try:
+        paths = {forge_export.save_combined_mask(mask, tmp_path) for _ in range(4)}
+    finally:
+        fe._NAME_COUNTER = count()
+    time.sleep(0.002)
+    forge_export.save_combined_mask(mask, tmp_path)
+    assert len(paths) == 4

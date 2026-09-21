@@ -34,6 +34,38 @@ _INPAINT_MASK: Any = None
 _CANVAS_BACKGROUNDS: list[Any] = []
 
 
+def _inside_img2img(component) -> bool:
+    """True if the component is (or is likely) inside the img2img tab.
+
+    Python sees the Gradio block tree, not the DOM. We walk the parent chain
+    for WebUI tab containers: any ancestor whose elem_id mentions "txt2img"
+    excludes the component (txt2img tab / its canvases), while an ancestor
+    mentioning "img2img" (e.g. tab_img2img) or the img_inpaint_* ids confirms
+    inclusion. Unknown block trees default to include, so an unexpected
+    Forge build degrades to the old (capture-all) behavior instead of
+    silently losing the auto-read feature.
+    """
+    eid = getattr(component, "elem_id", None) or ""
+    if eid.startswith("img_inpaint"):
+        return True
+    try:
+        node = getattr(component, "parent", None)
+        depth = 0
+        while node is not None and depth < 50:
+            pid = getattr(node, "elem_id", None)
+            if isinstance(pid, str):
+                low = pid.lower()
+                if "txt2img" in low:
+                    return False
+                if "img2img" in low:
+                    return True
+            node = getattr(node, "parent", None)
+            depth += 1
+    except Exception:
+        pass
+    return True
+
+
 def _capture_inpaint_components(component, **kwargs) -> None:
     global _INPAINT_BASE, _INPAINT_MASK
     eid = getattr(component, "elem_id", None) or kwargs.get("elem_id") or ""
@@ -45,8 +77,11 @@ def _capture_inpaint_components(component, **kwargs) -> None:
         _INPAINT_MASK = component
         _log("captured img_inpaint_mask")
     elif "logical_image_background" in classes:
-        _CANVAS_BACKGROUNDS.append(component)
-        _log(f"captured canvas background #{len(_CANVAS_BACKGROUNDS)} ({eid})")
+        if _inside_img2img(component):
+            _CANVAS_BACKGROUNDS.append(component)
+            _log(f"captured canvas background #{len(_CANVAS_BACKGROUNDS)} ({eid})")
+        else:
+            _log(f"skipped canvas background outside img2img ({eid})")
 
 
 script_callbacks.on_after_component(_capture_inpaint_components)
@@ -109,9 +144,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                     elem_id=f"sam3_anime_ckpt_{tab}",
                     scale=3,
                 )
-                refresh_ckpt_btn = gr.Button(
-                    "Refresh", elem_id=f"sam3_anime_refckpt_{tab}", scale=1
-                )
+                refresh_ckpt_btn = gr.Button("Refresh", elem_id=f"sam3_anime_refckpt_{tab}", scale=1)
             ckpt_note = gr.Markdown(
                 _ckpt_warning_text(default_ckpt),
                 elem_id=f"sam3_anime_ckpt_note_{tab}",
@@ -120,6 +153,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                 load_btn = gr.Button("Load", elem_id=f"sam3_anime_load_{tab}")
                 unload_btn = gr.Button("Unload", elem_id=f"sam3_anime_unload_{tab}")
                 free_btn = gr.Button("Free VRAM", elem_id=f"sam3_anime_free_{tab}")
+                cancel_btn = gr.Button("Cancel", elem_id=f"sam3_anime_cancel_{tab}")
             status = gr.Textbox(
                 label="Status",
                 value="SAM3: not loaded",
@@ -141,9 +175,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                 )
                 with gr.Column(scale=1):
                     preset_ids = [p[0] for p in constants.PRESETS]
-                    preset_labels = [
-                        f"{p[1]} ({p[0]})" if p[0] != "extra" else p[1] for p in constants.PRESETS
-                    ]
+                    preset_labels = [f"{p[1]} ({p[0]})" if p[0] != "extra" else p[1] for p in constants.PRESETS]
                     presets = gr.CheckboxGroup(
                         choices=list(zip(preset_labels, preset_ids, strict=True)),
                         value=list(constants.DEFAULT_SELECTED),
@@ -158,9 +190,7 @@ class Sam3AnimeMaskScript(scripts.Script):
 
             # --- generate + params ---
             with gr.Row():
-                generate_btn = gr.Button(
-                    "Generate masks", variant="primary", elem_id=f"sam3_anime_gen_{tab}", scale=1
-                )
+                generate_btn = gr.Button("Generate masks", variant="primary", elem_id=f"sam3_anime_gen_{tab}", scale=1)
                 threshold = gr.Slider(
                     label="score threshold",
                     minimum=0.0,
@@ -173,9 +203,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                     ),
                     scale=2,
                 )
-                max_side = gr.Slider(
-                    label="max side", minimum=512, maximum=1536, value=1024, step=64, scale=2
-                )
+                max_side = gr.Slider(label="max side", minimum=512, maximum=1536, value=1024, step=64, scale=2)
             with gr.Row():
                 dilate = gr.Slider(
                     label="dilate / erode (px)",
@@ -185,6 +213,18 @@ class Sam3AnimeMaskScript(scripts.Script):
                     step=1,
                     info="プラスで膨張 / マイナスで収縮。ドラッグ中も更新",
                     scale=3,
+                )
+                feather = gr.Slider(
+                    label="feather (px)",
+                    minimum=0,
+                    maximum=32,
+                    value=0,
+                    step=1,
+                    info=(
+                        "マスクの輪郭をぼかして塗り跡を軽減。"
+                        " inpaint はマスク値を補間するため、境界がなじみます(0=オフ)。"
+                    ),
+                    scale=2,
                 )
                 invert = gr.Checkbox(label="invert", value=False, scale=1)
 
@@ -228,9 +268,7 @@ class Sam3AnimeMaskScript(scripts.Script):
             if is_img2img:
                 export_label = "Export to inpaint (img2img)"
                 download_label = "Download mask PNG"
-                export_hint = (
-                    "Export は **img2img → Inpaint upload** に画像+マスクを送ります。"
-                )
+                export_hint = "Export は **img2img → Inpaint upload** に画像+マスクを送ります。"
                 export_btn_kwargs = {"variant": "primary"}
                 download_btn_kwargs = {"variant": "secondary"}
             else:
@@ -246,9 +284,7 @@ class Sam3AnimeMaskScript(scripts.Script):
             gr.Markdown(export_hint, elem_id=f"sam3_anime_export_hint_{tab}")
             with gr.Row():
                 if is_img2img:
-                    export_btn = gr.Button(
-                        export_label, elem_id=f"sam3_anime_export_{tab}", **export_btn_kwargs
-                    )
+                    export_btn = gr.Button(export_label, elem_id=f"sam3_anime_export_{tab}", **export_btn_kwargs)
                     download_btn = gr.DownloadButton(
                         download_label, elem_id=f"sam3_anime_dl_{tab}", **download_btn_kwargs
                     )
@@ -256,11 +292,17 @@ class Sam3AnimeMaskScript(scripts.Script):
                     download_btn = gr.DownloadButton(
                         download_label, elem_id=f"sam3_anime_dl_{tab}", **download_btn_kwargs
                     )
-                    export_btn = gr.Button(
-                        export_label, elem_id=f"sam3_anime_export_{tab}", **export_btn_kwargs
-                    )
+                    export_btn = gr.Button(export_label, elem_id=f"sam3_anime_export_{tab}", **export_btn_kwargs)
             export_status = gr.Markdown("", elem_id=f"sam3_anime_export_status_{tab}")
             export_payload = gr.Textbox(visible=False, elem_id=f"sam3_anime_export_payload_{tab}")
+
+            # Button lockout while SAM3 is busy. Generate's first .click
+            # handler fires immediately (queue=False) to disable
+            # generate/load/unload/free; the real work runs in the second .click
+            # (JS grabs the Forge Canvas image first, since a _js return replaces
+            # that event's own inputs). On completion the buttons re-enable via
+            # _generate's return values. Cancel is NOT locked so a long
+            # generation can always be stopped.
 
             def _do_load(name: str):
                 from sam3_anime import model_manager, vram
@@ -285,13 +327,19 @@ class Sam3AnimeMaskScript(scripts.Script):
             def _do_unload():
                 from sam3_anime import model_manager, vram
 
-                model_manager.unload()
+                ok, msg = model_manager.unload()
+                _log(msg)
+                if not ok:
+                    return f"{vram.status_text(model_manager.is_loaded())} | {msg}"
                 return vram.status_text(False)
 
             def _do_free():
                 from sam3_anime import model_manager, vram
 
-                model_manager.free_vram()
+                ok, msg = model_manager.free_vram()
+                _log(msg)
+                if not ok:
+                    return f"{vram.status_text(model_manager.is_loaded())} | {msg}"
                 return vram.status_text(False)
 
             def _refresh_ckpts():
@@ -302,9 +350,37 @@ class Sam3AnimeMaskScript(scripts.Script):
             def _on_ckpt_change(name: str):
                 return _ckpt_warning_text(name)
 
+            def _do_cancel():
+                from sam3_anime import model_manager
+
+                return model_manager.request_cancel()
+
+            def _lock_buttons():
+                from sam3_anime import ui_state
+
+                st = ui_state.button_interactivity(running=True)
+                return (
+                    gr.update(interactive=st["generate"]),
+                    gr.update(interactive=st["load"]),
+                    gr.update(interactive=st["unload"]),
+                    gr.update(interactive=st["free"]),
+                )
+
+            def _unlock_buttons():
+                from sam3_anime import ui_state
+
+                st = ui_state.button_interactivity(running=False)
+                return (
+                    gr.update(interactive=st["generate"]),
+                    gr.update(interactive=st["load"]),
+                    gr.update(interactive=st["unload"]),
+                    gr.update(interactive=st["free"]),
+                )
+
             load_btn.click(fn=_do_load, inputs=[ckpt], outputs=[status], queue=False)
             unload_btn.click(fn=_do_unload, inputs=[], outputs=[status], queue=False)
             free_btn.click(fn=_do_free, inputs=[], outputs=[status], queue=False)
+            cancel_btn.click(fn=_do_cancel, inputs=[], outputs=[status], queue=False)
             refresh_ckpt_btn.click(fn=_refresh_ckpts, inputs=[], outputs=[ckpt], queue=False)
             ckpt.change(fn=_on_ckpt_change, inputs=[ckpt], outputs=[ckpt_note], queue=False)
 
@@ -318,18 +394,26 @@ class Sam3AnimeMaskScript(scripts.Script):
                 mside,
                 do_invert,
                 dil_amt,
+                feather_amt,
             ):
-                from sam3_anime import infer, model_manager, postprocess
+                from sam3_anime import infer, model_manager, postprocess, ui_state
 
                 # Failure outputs keep the previous generate's state:
                 # gr.update() is a no-op so gallery/combined/overlay/store/active
                 # stay as-is and the user can retry without losing masks.
                 no_change = gr.update()
+                buttons_back = _unlock_buttons()
 
                 def _fail(status_message: str):
                     return (
-                        no_change, no_change, no_change, no_change, no_change,
-                        no_change, status_message,
+                        no_change,
+                        no_change,
+                        no_change,
+                        no_change,
+                        no_change,
+                        no_change,
+                        status_message,
+                        *buttons_back,
                     )
 
                 gallery_out = []
@@ -345,26 +429,24 @@ class Sam3AnimeMaskScript(scripts.Script):
                         notes.append("img2img canvas を使用")
                 if image is None:
                     image = _try_img2img_init()
-                if image is None:
-                    return _fail(
-                        "No image. 拡張内の Image か img2img の init image を使ってください。"
-                    )
+
+                # Shared pure-logic resolver (raises ValueError with a
+                # UI-safe message when there is no image or no prompts).
+                try:
+                    resolved, prompts, labels = ui_state.resolve_generation_inputs(image, canvas_data, selected, free)
+                except ValueError as e:
+                    return _fail(str(e))
+                if resolved == "CANVAS":
+                    # Canvas held a data URL we failed to decode earlier —
+                    # resolver marked it so we surface the same guidance.
+                    return _fail("No image. 拡張内の Image か img2img の init image を使ってください。")
+                image = resolved
 
                 used_image = image.convert("RGB")
-                prompt_rows = constants.resolve_prompts(selected or [], free or "")
-                prompts = [(cid, prompt) for cid, prompt, _label in prompt_rows]
-                labels = {cid: label for cid, _prompt, label in prompt_rows}
-                if not prompts:
-                    return _fail(
-                        "プリセットか自由入力を1つ以上指定してください。"
-                        " 自由入力のみなら extra チェックは不要です。"
-                    )
 
                 if not model_manager.is_loaded():
                     if not ckpt_name:
-                        return _fail(
-                            "SAM3 checkpoint が未選択です。ドロップダウンから選んでください。"
-                        )
+                        return _fail("SAM3 checkpoint が未選択です。ドロップダウンから選んでください。")
                     _log(f"auto-loading SAM3: {ckpt_name}")
                     ok, load_msg = model_manager.load(ckpt_name)
                     if not ok:
@@ -372,7 +454,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                     notes.append(f"auto-loaded: {Path(ckpt_name).name}")
 
                 try:
-                    raw, skipped = infer.generate_masks(
+                    raw, skipped, cancelled = infer.generate_masks(
                         used_image,
                         prompts,
                         max_side=int(mside),
@@ -388,17 +470,23 @@ class Sam3AnimeMaskScript(scripts.Script):
                     return _fail("Prompt produced no mask. " + " ".join(notes))
 
                 masks_state = raw
-                processed, combined = postprocess.process_pipeline(
-                    raw, dilate=int(dil_amt), invert=bool(do_invert)
-                )
+                try:
+                    processed, combined = postprocess.process_pipeline(
+                        raw,
+                        dilate=int(dil_amt),
+                        feather=int(feather_amt),
+                        invert=bool(do_invert),
+                    )
+                except Exception as e:
+                    # Unlock buttons even on unexpected postprocess errors.
+                    last = str(e).strip().splitlines()[-1] if str(e).strip() else repr(e)
+                    _log(traceback.format_exc())
+                    return _fail(f"Postprocess failed: {last}")
 
                 for cid, mask in processed.items():
                     gallery_out.append((mask, f"{constants.label_for_id(cid, labels)} ({cid})"))  # noqa: E501
 
-                active_choices = [
-                    (f"{labels.get(cid, constants.label_for_id(cid, labels))} ({cid})", cid)
-                    for cid in processed
-                ]
+                active_choices = ui_state.build_active_choices(processed, labels)
                 active_value = list(processed)
 
                 # combined preview overlay (OR of active masks)
@@ -410,14 +498,18 @@ class Sam3AnimeMaskScript(scripts.Script):
                         alpha=0.45,
                     )
 
-                status_msg = f"Generated {len(processed)} mask(s)."
-                if notes:
-                    status_msg += " " + " ".join(notes)
+                status_msg = ui_state.build_status_message(len(processed), notes)
+                if cancelled:
+                    status_msg += " | CANCELLED — 完了分のみ表示しています"
 
                 if _unload_after_generate_enabled():
                     try:
-                        model_manager.unload()
-                        status_msg += " | SAM3 unloaded (settings)"
+                        ok, msg = model_manager.unload()
+                        if ok:
+                            status_msg += " | SAM3 unloaded (settings)"
+                        else:
+                            status_msg += f" | auto-unload skipped: {msg}"
+                        _log(msg)
                     except Exception as e:
                         _log(f"auto-unload failed: {e}")
 
@@ -429,23 +521,51 @@ class Sam3AnimeMaskScript(scripts.Script):
                     masks_state,
                     gr.update(choices=active_choices, value=active_value),
                     status_msg,
+                    *buttons_back,
                 )
 
             # JS runs first: extract Forge Canvas base64, return as extra input
-            # Gradio 4: _js return value replaces the inputs passed to fn
+            # Gradio 4: _js return value replaces the inputs passed to fn.
+            # Prefer a canvas under the img2img tab (its tab panel contains
+            # #mode_img2img); fall back to the first data URL only when the
+            # DOM layout is unrecognized, so txt2img canvases and other
+            # extensions' images are never preferred.
             _js_with_canvas = (
-                "(img, canvas, ckpt, presets, free, thr, mside, invert, dilate) => {"
+                "(img, canvas, ckpt, presets, free, thr, mside, invert, dilate, feather) => {"
                 " try {"
                 "  const root = (typeof gradioApp === 'function') ? gradioApp() : document;"
                 "  const areas = root.querySelectorAll('.logical_image_background textarea');"
-                "  let data = '';"
+                "  let preferred = ''; let fallback = '';"
                 "  for (const ta of areas) {"
-                "    if (ta.value && ta.value.startsWith('data:image/')) { data = ta.value; break; }"
+                "    if (!ta.value || !ta.value.startsWith('data:image/')) continue;"
+                "    if (!fallback) fallback = ta.value;"
+                "    let node = ta.parentElement;"
+                "    while (node && node !== root) {"
+                "      if (node.querySelector && node.querySelector('#mode_img2img')) { preferred = ta.value; break; }"
+                "      node = node.parentElement;"
+                "    }"
+                "    if (preferred) break;"
                 "  }"
+                "  const data = preferred || fallback;"
                 "  if (!img && data) canvas = data;"
                 " } catch (e) {}"
-                " return [img, canvas, ckpt, presets, free, thr, mside, invert, dilate];"
+                " return [img, canvas, ckpt, presets, free, thr, mside, invert, dilate, feather];"
                 "}"
+            )
+
+            def _generate_js(img, canvas, ckpt_name, sel, free_txt, thr, mside, do_invert, dil_amt, feather_amt):
+                """JS runs first on the generate event and its return replaces
+                the inputs passed to _generate (Gradio 4)."""
+                return [img, canvas, ckpt_name, sel, free_txt, thr, mside, do_invert, dil_amt, feather_amt]
+
+            # 1) disable generate/load/unload/free immediately, 2) run generate
+            # (JS re-reads the canvas for this event, buttons re-enable via
+            # _generate's return).
+            generate_btn.click(
+                fn=_lock_buttons,
+                inputs=[],
+                outputs=[generate_btn, load_btn, unload_btn, free_btn],
+                queue=False,
             )
             generate_btn.click(
                 fn=_generate,
@@ -459,6 +579,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                     max_side,
                     invert,
                     dilate,
+                    feather,
                 ],
                 outputs=[
                     gallery,
@@ -468,12 +589,16 @@ class Sam3AnimeMaskScript(scripts.Script):
                     store_masks,
                     active_masks,
                     status,
+                    generate_btn,
+                    load_btn,
+                    unload_btn,
+                    free_btn,
                 ],
                 _js=_js_with_canvas,
             )
 
             # Re-run postprocess when sliders / active mask selection change
-            def _repost(store_img, store_m, active, dil_amt, do_invert):
+            def _repost(store_img, store_m, active, dil_amt, feather_amt, do_invert):
                 if not store_m:
                     return None, None, None
                 from sam3_anime import postprocess
@@ -483,7 +608,10 @@ class Sam3AnimeMaskScript(scripts.Script):
                     return [], None, None
                 subset = {cid: store_m[cid] for cid in selected}
                 processed, combined = postprocess.process_pipeline(
-                    subset, dilate=int(dil_amt), invert=bool(do_invert)
+                    subset,
+                    dilate=int(dil_amt),
+                    feather=int(feather_amt),
+                    invert=bool(do_invert),
                 )
                 gallery_out = [(m, f"{constants.label_for_id(cid)} ({cid})") for cid, m in processed.items()]
                 overlay = None
@@ -492,7 +620,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                 return gallery_out, combined, overlay
 
             def _repost_inputs():
-                return [store_image, store_masks, active_masks, dilate, invert]
+                return [store_image, store_masks, active_masks, dilate, feather, invert]
 
             # Live update while dragging (not only on release)
             dilate.input(
@@ -534,7 +662,7 @@ class Sam3AnimeMaskScript(scripts.Script):
             )
 
             def _prepare_export(store_img, combined, store_m, active):
-                from sam3_anime import forge_export, postprocess
+                from sam3_anime import forge_export, postprocess, ui_state
 
                 has_canvas = _INPAINT_BASE is not None and _INPAINT_MASK is not None
 
@@ -560,24 +688,17 @@ class Sam3AnimeMaskScript(scripts.Script):
                 if has_canvas:
                     try:
                         init_pil, mask_pil = forge_export.build_inpaint_pair(store_img, mask)
-                        note = (
-                            f"Exported to **img2img → Inpaint upload**. "
-                            f"マスク PNG: `{png_path}`"
-                        )
+                        note = ui_state.build_export_note(str(png_path))
                         return note, payload, gr.update(value=init_pil), gr.update(value=mask_pil)
                     except Exception as e:
                         _log(f"build_inpaint_pair failed: {e}")
                         return (
-                            f"Export prepared（画像セットに失敗: {e}）. PNG: `{png_path}`",
+                            ui_state.build_export_note(str(png_path), set_error=str(e)),
                             payload,
                             gr.update(),
                             gr.update(),
                         )
-                note = (
-                    f"Export prepared（送信先: **img2img → Inpaint upload**）. "
-                    f"マスク PNG: `{png_path}`。"
-                    "自動送信に失敗した場合は PNG を手動で Inpaint upload へどうぞ。"
-                )
+                note = ui_state.build_export_note(str(png_path), image_set=False)
                 return note, payload
 
             def _dl_mask(combined):
@@ -622,8 +743,8 @@ class Sam3AnimeMaskScript(scripts.Script):
                         " try {"
                         "  const root = (typeof gradioApp === 'function') ? gradioApp() : document;"
                         "  const payloadEl = root.querySelector("
-                        "    'textarea[id*=\"sam3_anime_export_payload\"],"
-                        " [id*=\"sam3_anime_export_payload\"] textarea'"
+                        '    \'textarea[id*="sam3_anime_export_payload"],'
+                        ' [id*="sam3_anime_export_payload"] textarea\''
                         "  );"
                         "  const payload = payloadEl ? payloadEl.value : '';"
                         "  if (window.sam3AnimeInjectInpaint && payload) {"
@@ -707,6 +828,9 @@ def _try_img2img_init() -> Image.Image | None:
     """Best-effort: read img2img / sketch / inpaint canvas image if extension Image is empty.
 
     Forge Canvas LogicalImage components hold base64 data URLs.
+    Only canvases captured under the img2img tab are used (see
+    _capture_inpaint_components), so txt2img and third-party images are
+    never mistaken for the init image.
     Creation order: img2img, sketch, inpaint, inpaint_sketch — first non-empty wins.
     """
     for comp in _CANVAS_BACKGROUNDS:

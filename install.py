@@ -143,10 +143,7 @@ def main() -> None:
             _skip(reason)
             return
 
-    _log(
-        "sam3 not found — attempting install with --no-deps "
-        "(existing torch/numpy/etc. will NOT be changed)"
-    )
+    _log("sam3 not found — attempting install with --no-deps (existing torch/numpy/etc. will NOT be changed)")
     cmd = [
         sys.executable,
         "-m",
@@ -169,12 +166,9 @@ def main() -> None:
         _log(
             "sam3 installed but 'import sam3' failed — a runtime dependency may be "
             "missing (installed with --no-deps). Check the error in a console with: "
-            f"{sys.executable} -c \"import sam3\""
+            f'{sys.executable} -c "import sam3"'
         )
-        _log(
-            "fix manually in the WebUI venv if needed, e.g.: "
-            f"pip install {SAM3_PIP_SPEC}"
-        )
+        _log(f"fix manually in the WebUI venv if needed, e.g.: pip install {SAM3_PIP_SPEC}")
 
 
 if __name__ == "__main__":

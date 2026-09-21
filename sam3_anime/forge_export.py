@@ -13,6 +13,8 @@ from __future__ import annotations
 import base64
 import io
 import tempfile
+import time
+from itertools import count
 from pathlib import Path
 
 from PIL import Image
@@ -26,10 +28,24 @@ def _pil_to_b64_png(img: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+_NAME_COUNTER = count()
+
+
+def _timestamped_mask_name() -> str:
+    """Timestamped + per-process sequence so concurrent WebUI sessions
+    (e.g. --share / multi-tab, same process) never overwrite each other's
+    exported mask — even when called within the same clock tick."""
+    now = time.time()
+    stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
+    ms = int(now * 1000) % 1000
+    seq = next(_NAME_COUNTER) % 1000
+    return f"sam3_anime_combined_mask_{stamp}_{ms:03d}_{seq:03d}.png"
+
+
 def save_combined_mask(mask: Image.Image, directory: str | Path | None = None) -> Path:
     directory = Path(directory) if directory else Path(tempfile.gettempdir()) / "sam3_anime_masks"
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "sam3_anime_combined_mask.png"
+    path = directory / _timestamped_mask_name()
     to_inpaint_mask(mask).save(path, format="PNG")
     return path
 
@@ -56,9 +72,7 @@ def build_inpaint_upload_payload(image: Image.Image, mask: Image.Image) -> tuple
     return _pil_to_b64_png(img), _pil_to_b64_png(build_mask_rgba(m))
 
 
-def build_inpaint_pair(
-    image: Image.Image, mask: Image.Image
-) -> tuple[Image.Image, Image.Image]:
+def build_inpaint_pair(image: Image.Image, mask: Image.Image) -> tuple[Image.Image, Image.Image]:
     """Return (init RGB, mask RGBA) ready for img_inpaint_base / img_inpaint_mask.
 
     The mask is fully opaque so the Inpaint upload preview shows proper

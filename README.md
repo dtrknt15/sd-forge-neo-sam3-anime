@@ -14,10 +14,11 @@ Anime-oriented inpaint mask helper for **Stable Diffusion WebUI Forge Neo** (Gra
 1. Auto-reads img2img init image when extension Image is empty
 2. Auto-loads SAM3 on Generate if not already loaded
 3. Check anime presets (face / hair / clothes / …) or add free-text concepts
-4. Generate per-concept masks, preview, dilate/erode, invert
-5. After generate, toggle which concept masks are used (no re-inference); active masks are combined (OR) automatically
-6. Export image + mask to **img2img → Inpaint upload**
-7. Unload / Free VRAM when done
+4. Generate per-concept masks, preview, dilate/erode, feather, invert
+5. After generate, toggle which concept masks are used (no re-inference); active masks are combined (max blend) automatically
+6. Export image + mask to **img2img → Inpaint upload** (feather follows the processed mask, so a soft edge is exported as-is)
+7. **Cancel** stops a running generation at the next prompt boundary; masks completed so far are kept
+8. Unload / Free VRAM when done
 
 Free text is always applied when non-empty (the `extra` checkbox is optional).
 Comma-separated phrases become separate masks (`cat ears, ribbon` → 2 masks).
@@ -70,13 +71,16 @@ Links:
 2. Check presets (default: `face`). Optional free text: `cat ears, ribbon, sword` (comma-split into separate masks; `extra` checkbox not required)
 3. **Generate masks** — SAM3 is auto-loaded if not already loaded
 4. Toggle **使用するマスク** to include/exclude individual concept masks (updates preview/export without re-running SAM3)
-5. Adjust `dilate / erode`, `invert mask` as needed
+5. Adjust `dilate / erode`, `feather`, `invert mask` as needed
+   - **feather (px)** blurs the mask edge into a 0–255 gradient. WebUI's inpaint interpolates mask values, so a soft edge removes visible paint seams that a hard binary edge causes. 4–8 px is a good start; interior and background stay fully 255/0, only the boundary is graded. Drag the slider to preview live
 6. **Export to inpaint** — always targets **img2img → Inpaint upload**
    - Mask convention: **white = edit region** (dual-encoded in RGB and alpha)
    - If the region looks inverted in the Inpaint upload preview, also check `inpainting_mask_invert` (Settings)
    - On **img2img**: Export is primary
    - On **txt2img**: Download mask PNG is primary; Export switches to img2img Inpaint upload
 7. Optional: **Unload SAM3** / **Free VRAM**
+
+**Cancel** (next to Unload / Free VRAM): during a long generate, press Cancel to stop after the current prompt. Remaining prompts are listed as `Cancelled: …` in the status line and masks generated so far are kept — you can preview/export the partial result. The currently running prompt (1–few seconds) cannot be aborted mid-flight; pressing Cancel when nothing is running just reports that.
 
 If no checkpoint is found, the UI shows the expected path (`models/SAM3/sam3.pt`) and HF gated-access notes.
 
@@ -144,10 +148,11 @@ SAM 3 itself is by Meta and uses the **SAM License** — see [facebookresearch/s
 1. 拡張内の Image が空なら img2img の画像を自動参照
 2. 未ロード時の Generate で SAM3 を自動ロード
 3. アニメプリセット（顔・髪・服など）にチェック、または自由入力
-4. コンセプトごとのマスク生成、プレビュー、膨張/収縮、反転
-5. 生成後に「使用するマスク」で個別ON/OFF（再推論なし）。使用中のマスクは自動的に合成（OR）されます
-6. 画像 + マスクを **img2img → Inpaint upload** へ Export
-7. 終わったら Unload / Free VRAM
+4. コンセプトごとのマスク生成、プレビュー、膨張/収縮、feather（輪郭ぼかし）、反転
+5. 生成後に「使用するマスク」で個別ON/OFF（再推論なし）。使用中のマスクは自動的に合成（最大値ブレンド）されます
+6. 画像 + マスクを **img2img → Inpaint upload** へ Export（feather 処理後のマスクがそのまま送られるため、ソフト境界も反映）
+7. **Cancel** で実行中の生成を次のプロンプト境界で停止。完了済みのマスクは保持されます
+8. 終わったら Unload / Free VRAM
 
 自由入力は空でなければ常に使われます（`extra` チェック不要）。
 カンマ区切りの文は別マスクになります（`cat ears, ribbon` → 2枚）。
@@ -199,13 +204,16 @@ Hugging Face 上の SAM3 重みは **Gated** です。申請して承認され�
 2. プリセットにチェック（既定: `face`）。自由入力例: `cat ears, ribbon, sword`（カンマで分割・`extra` チェック不要）
 3. **Generate masks**（未ロード時は自動ロード）
 4. **使用するマスク** で個別ON/OFF（プレビュー/Export へ即時反映、再推論なし）
-5. `dilate / erode`、`invert mask` を調整
+5. `dilate / erode`、`feather`、`invert mask` を調整
+   - **feather (px)** はマスクの輪郭を 0〜255 の勾配にぼかします。WebUI の inpaint はマスク値を補間するため、二値マスクの硬い境界による塗り跡・段差が目立ちにくくなります。まずは 4〜8px 推奨。内部と背景は 255/0 のまま、境界帯だけが滑らかになります。ドラッグ中もプレビュー更新
 6. **Export to inpaint** — 送信先は常に **img2img → Inpaint upload**
    - マスク規約: **白 = 編集領域**（不透明 RGBA。プレビューは黒/白で表示されます）
    - Inpaint upload のプレビューで白黒が逆に見える場合は設定の `inpainting_mask_invert` も確認
    - **img2img** タブ: Export が主ボタン
    - **txt2img** タブ: マスク PNG Download が主。Export を押すと img2img Inpaint upload へ自動切替
 7. 任意で **Unload SAM3** / **Free VRAM**
+
+**Cancel**（Unload / Free VRAM の隣）: 生成中に押すと現在のプロンプト完了後に停止します。未実行のプロンプトはステータスに `Cancelled: …` と表示され、**生成済みのマスクはそのまま保持**されるため、途中結果のプレビュー/Export が可能です。実行中の 1 プロンプト自体（1〜数秒）は中断できません。生成していないときに押すとその旨が表示されるだけです。
 
 チェックポイントが無いときは、配置先パス（`models/SAM3/sam3.pt`）と HF gated 申請の案内を UI に表示します。
 

@@ -1,4 +1,4 @@
-"""Postprocess masks: dilate/erode, invert, overlay."""
+"""Postprocess masks: dilate/erode, feather, invert, overlay."""
 
 from __future__ import annotations
 
@@ -10,14 +10,19 @@ from PIL import Image
 from .constants import OVERLAY_PALETTE
 
 
-def _to_np(mask: Image.Image | np.ndarray) -> np.ndarray:
+def _to_gray(mask: Image.Image | np.ndarray) -> np.ndarray:
+    """Raw grayscale uint8 — keeps feather gradients intact."""
     if isinstance(mask, Image.Image):
         arr = np.array(mask.convert("L"))
     else:
         arr = np.asarray(mask)
         if arr.ndim == 3:
             arr = arr[..., 0]
-    return (arr > 127).astype(np.uint8) * 255
+    return arr.astype(np.uint8)
+
+
+def _to_np(mask: Image.Image | np.ndarray) -> np.ndarray:
+    return (_to_gray(mask) > 127).astype(np.uint8) * 255
 
 
 def _morph_cv2(mask_u8: np.ndarray, amount: int) -> np.ndarray | None:
@@ -55,23 +60,59 @@ def _morph_pil(mask_u8: np.ndarray, amount: int) -> np.ndarray:
 
 
 def apply_dilate_erode(mask: Image.Image | np.ndarray, amount: int) -> Image.Image:
-    arr = _to_np(mask)
+    arr = _to_gray(mask)  # grayscale morphology: identical for binary masks
     arr = _morph_pil(arr, int(amount))
     return Image.fromarray(arr, mode="L")
 
 
+def feather_mask(mask: Image.Image | np.ndarray, radius: int) -> Image.Image:
+    """Blur the mask edge so inpaint boundaries blend smoothly (no hard step).
+
+    WebUI's inpaint samples mask values, so a soft 0..255 ramp at the edge
+    avoids visible paint seams that a binary NEAREST-resized mask causes.
+    radius <= 0 returns the mask unchanged. Interior and far background stay
+    saturated at 0/255; only the transition band is graded.
+    """
+    r = int(radius)
+    if r <= 0:
+        return Image.fromarray(_to_gray(mask), mode="L")
+    arr = _to_gray(mask)
+    img = Image.fromarray(arr, mode="L")
+    try:
+        import cv2
+
+        k = 2 * r + 1
+        blurred = cv2.GaussianBlur(img, (k, k), sigmaX=0)
+    except Exception:
+        # PIL fallback: match cv2's sigma-from-ksize formula so both paths
+        # blur identically (PIL's radius parameter IS the sigma).
+        from PIL import ImageFilter
+
+        sigma = 0.3 * ((2 * r + 1) - 1) * 0.5 - 0.3 + 0.8  # cv2: 0.3*((ksize-1)*0.5 - 1) + 0.8
+        blurred = img.filter(ImageFilter.GaussianBlur(radius=max(sigma, 0.3)))
+    return Image.fromarray(np.array(blurred, dtype=np.uint8), mode="L")
+
+
+def _to_np_mask_image(mask: Image.Image | np.ndarray) -> Image.Image:
+    """Normalize to an L-mode PIL image without thresholding."""
+    return Image.fromarray(_to_gray(mask), mode="L")
+
+
 def invert_mask(mask: Image.Image) -> Image.Image:
-    arr = _to_np(mask)
+    # 255 - gray, not thresholded, so a feathered mask inverts to a soft mask
+    arr = _to_gray(mask)
     return Image.fromarray(255 - arr, mode="L")
 
 
 def combine_masks(masks: Iterable[Image.Image]) -> Image.Image:
+    """Union of masks. np.maximum (not bitwise OR) so feathered (soft) masks
+    blend correctly; identical to OR for binary 0/255 masks."""
     masks = list(masks)
     if not masks:
         raise ValueError("no masks to combine")
-    acc = _to_np(masks[0])
+    acc = _to_gray(masks[0])
     for m in masks[1:]:
-        acc = np.bitwise_or(acc, _to_np(m))
+        acc = np.maximum(acc, _to_gray(m))
     return Image.fromarray(acc, mode="L")
 
 
@@ -100,15 +141,19 @@ def process_pipeline(
     per_concept: dict[str, Image.Image],
     *,
     dilate: int = 0,
+    feather: int = 0,
     invert: bool = False,
 ) -> tuple[dict[str, Image.Image], Image.Image | None]:
-    """Apply morphology then invert. Fixed order: morphology → invert.
+    """Apply morphology → feather → invert. Fixed order.
 
-    Returns (processed_per_concept, combined_or_None).
+    Feathering runs before invert so an inverted (background) mask keeps the
+    same soft edge as the foreground one — both are graded around the same
+    boundary. Returns (processed_per_concept, combined_or_None).
     """
     out: dict[str, Image.Image] = {}
     for cid, mask in per_concept.items():
         m = apply_dilate_erode(mask, dilate)
+        m = feather_mask(m, feather)
         if invert:
             m = invert_mask(m)
         out[cid] = m
