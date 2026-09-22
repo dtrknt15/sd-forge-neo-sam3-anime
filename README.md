@@ -11,14 +11,15 @@ Anime-oriented inpaint mask helper for **Stable Diffusion WebUI Forge Neo** (Gra
 
 ## Features
 
-1. Auto-reads img2img init image when extension Image is empty
+1. Auto-reads **img2img init image only** when extension Image is empty (ControlNet / other extension images are never used)
 2. Auto-loads SAM3 on Generate if not already loaded
 3. Check anime presets (face / hair / clothes / …) or add free-text concepts
 4. Generate per-concept masks, preview, dilate/erode, feather, invert
-5. After generate, toggle which concept masks are used (no re-inference); active masks are combined (max blend) automatically
-6. Export image + mask to **img2img → Inpaint upload** (feather follows the processed mask, so a soft edge is exported as-is)
-7. **Cancel** stops a running generation at the next prompt boundary; masks completed so far are kept
-8. Unload / Free VRAM when done
+5. Overlay shows each concept in its own color (legend under the masks). Click a gallery item to preview that concept alone
+6. After generate, toggle which concept masks are used (no re-inference); active masks are combined (max blend) automatically
+7. Export image + mask to **img2img → Inpaint upload** (feather follows the processed mask, so a soft edge is exported as-is)
+8. **Cancel** stops a running generation at the next prompt boundary; masks completed so far are kept
+9. Unload / Free VRAM when done
 
 Free text is always applied when non-empty (the `extra` checkbox is optional).
 Comma-separated phrases become separate masks (`cat ears, ribbon` → 2 masks).
@@ -67,10 +68,11 @@ Links:
 
 ## Usage
 
-1. Put an image on img2img (or drop it into the extension Image box — if empty, img2img init image is used automatically)
+1. Put an image on img2img (or drop it into the extension Image box). **img2img から取得** fills 参照画像 so you can verify the source before Generate. If empty, only the img2img init / Inpaint upload image is used; ControlNet and other extension images are ignored
 2. Check presets (default: `face`). Optional free text: `cat ears, ribbon, sword` (comma-split into separate masks; `extra` checkbox not required)
 3. **Generate masks** — SAM3 is auto-loaded if not already loaded
-4. Toggle **使用するマスク** to include/exclude individual concept masks (updates preview/export without re-running SAM3)
+4. Toggle **使用するマスク** to include/exclude individual concept masks (updates preview/export without re-running SAM3). Quick buttons: 全ON / 全OFF / 顔まわり / 人物 / 反転
+   - Overlay is color-coded per concept. Click a gallery item for that concept alone; **色分け表示に戻す** restores the multi-color view
 5. Adjust `dilate / erode`, `feather`, `invert mask` as needed
    - **feather (px)** blurs the mask edge into a 0–255 gradient. WebUI's inpaint interpolates mask values, so a soft edge removes visible paint seams that a hard binary edge causes. 4–8 px is a good start; interior and background stay fully 255/0, only the boundary is graded. Drag the slider to preview live
 6. **Export to inpaint** — always targets **img2img → Inpaint upload**
@@ -145,14 +147,15 @@ SAM 3 itself is by Meta and uses the **SAM License** — see [facebookresearch/s
 
 ## できること
 
-1. 拡張内の Image が空なら img2img の画像を自動参照
+1. 拡張内の Image が空なら **img2img の init image のみ**自動参照（ControlNet など他拡張の画像は使いません）
 2. 未ロード時の Generate で SAM3 を自動ロード
 3. アニメプリセット（顔・髪・服など）にチェック、または自由入力
 4. コンセプトごとのマスク生成、プレビュー、膨張/収縮、feather（輪郭ぼかし）、反転
-5. 生成後に「使用するマスク」で個別ON/OFF（再推論なし）。使用中のマスクは自動的に合成（最大値ブレンド）されます
-6. 画像 + マスクを **img2img → Inpaint upload** へ Export（feather 処理後のマスクがそのまま送られるため、ソフト境界も反映）
-7. **Cancel** で実行中の生成を次のプロンプト境界で停止。完了済みのマスクは保持されます
-8. 終わったら Unload / Free VRAM
+5. オーバーレイはコンセプト別の色分け表示（凡例つき）。個別マスクをクリックで単体表示
+6. 生成後に「使用するマスク」で個別ON/OFF（再推論なし）。使用中のマスクは自動的に合成（最大値ブレンド）されます
+7. 画像 + マスクを **img2img → Inpaint upload** へ Export（feather 処理後のマスクがそのまま送られるため、ソフト境界も反映）
+8. **Cancel** で実行中の生成を次のプロンプト境界で停止。完了済みのマスクは保持されます
+9. 終わったら Unload / Free VRAM
 
 自由入力は空でなければ常に使われます（`extra` チェック不要）。
 カンマ区切りの文は別マスクになります（`cat ears, ribbon` → 2枚）。
@@ -200,10 +203,11 @@ Hugging Face 上の SAM3 重みは **Gated** です。申請して承認され�
 
 ## 使い方
 
-1. img2img に画像を置く（拡張内の Image が空なら img2img の画像を自動参照）
+1. img2img に画像を置く。**img2img から取得** で参照画像を先に確認できます（空のまま Generate でも img2img init / Inpaint upload 画像のみ自動参照。ControlNet など他拡張の画像は使いません）
 2. プリセットにチェック（既定: `face`）。自由入力例: `cat ears, ribbon, sword`（カンマで分割・`extra` チェック不要）
 3. **Generate masks**（未ロード時は自動ロード）
-4. **使用するマスク** で個別ON/OFF（プレビュー/Export へ即時反映、再推論なし）
+4. **使用するマスク** で個別ON/OFF（プレビュー/Export へ即時反映、再推論なし）。クイックボタン: 全ON / 全OFF / 顔まわり / 人物 / 反転
+   - オーバーレイはコンセプト別の色分け表示。個別マスクのクリックでその色の単体表示、「色分け表示に戻す」で全体へ戻れます
 5. `dilate / erode`、`feather`、`invert mask` を調整
    - **feather (px)** はマスクの輪郭を 0〜255 の勾配にぼかします。WebUI の inpaint はマスク値を補間するため、二値マスクの硬い境界による塗り跡・段差が目立ちにくくなります。まずは 4〜8px 推奨。内部と背景は 255/0 のまま、境界帯だけが滑らかになります。ドラッグ中もプレビュー更新
 6. **Export to inpaint** — 送信先は常に **img2img → Inpaint upload**

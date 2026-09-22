@@ -3,6 +3,82 @@ import pytest
 from sam3_anime import ui_state
 
 
+class TestThirdPartyAndInitSource:
+    def test_controlnet_ids_are_third_party(self):
+        assert ui_state.is_third_party_image_source("controlnet_img2img_0")
+        assert ui_state.is_third_party_image_source("foo", "ControlNet Unit")
+        assert ui_state.is_third_party_image_source("ip_adapter_block")
+
+    def test_plain_img2img_is_not_third_party(self):
+        assert not ui_state.is_third_party_image_source("img2img_image", "tab_img2img")
+
+    def test_accepts_img2img_canvas(self):
+        assert ui_state.accepts_as_img2img_init(
+            "logical_image_background",
+            ["tab_img2img", "mode_img2img"],
+            class_blob="logical_image_background",
+        )
+
+    def test_accepts_img_inpaint_base_even_without_parent_id(self):
+        assert ui_state.accepts_as_img2img_init("img_inpaint_base", [])
+
+    def test_rejects_controlnet_under_img2img(self):
+        assert not ui_state.accepts_as_img2img_init(
+            "cn_unit_0_image",
+            ["tab_img2img", "controlnet"],
+            class_blob="logical_image_background",
+        )
+
+    def test_rejects_txt2img_canvas(self):
+        assert not ui_state.accepts_as_img2img_init(
+            "txt2img_image",
+            ["tab_txt2img"],
+        )
+
+    def test_rejects_unknown_tree(self):
+        # Unknown third-party / orphan canvases must not be auto-used.
+        assert not ui_state.accepts_as_img2img_init(
+            "mystery_canvas",
+            ["some_extension_panel"],
+        )
+
+    def test_rejects_controlnet_label_without_elem_id(self):
+        assert not ui_state.accepts_as_img2img_init(
+            "img2img_sketch",
+            ["tab_img2img", "ControlNet"],
+            class_blob="logical_image_background",
+        )
+
+
+class TestQuickSelectActive:
+    AVAILABLE = ["face", "hair", "extra", "eyes", "background"]
+
+    def test_all(self):
+        assert ui_state.quick_select_active("all", self.AVAILABLE) == self.AVAILABLE
+
+    def test_none(self):
+        assert ui_state.quick_select_active("none", self.AVAILABLE, ["face"]) == []
+
+    def test_face_focus_keeps_available_order(self):
+        assert ui_state.quick_select_active("face", self.AVAILABLE) == ["face", "hair", "eyes"]
+
+    def test_person_excludes_sky_background_extra(self):
+        assert ui_state.quick_select_active("person", self.AVAILABLE) == ["face", "hair", "eyes"]
+
+    def test_invert(self):
+        assert ui_state.quick_select_active("invert", self.AVAILABLE, ["face", "eyes"]) == [
+            "hair",
+            "extra",
+            "background",
+        ]
+
+    def test_empty_available(self):
+        assert ui_state.quick_select_active("all", []) == []
+
+    def test_unknown_mode_returns_all(self):
+        assert ui_state.quick_select_active("nope", self.AVAILABLE) == self.AVAILABLE
+
+
 class TestResolveGenerationInputs:
     def test_returns_prompts_and_labels(self):
         img, prompts, labels = ui_state.resolve_generation_inputs(object(), None, ["face"], "cat ears")
@@ -22,6 +98,10 @@ class TestResolveGenerationInputs:
         with pytest.raises(ValueError, match="No image"):
             ui_state.resolve_generation_inputs(None, "", ["face"], "")
 
+    def test_no_image_message_mentions_controlnet_excluded(self):
+        with pytest.raises(ValueError, match="ControlNet"):
+            ui_state.resolve_generation_inputs(None, None, ["face"], "")
+
     def test_no_prompts_raises(self):
         with pytest.raises(ValueError, match="プリセット"):
             ui_state.resolve_generation_inputs(object(), None, [], "")
@@ -30,6 +110,51 @@ class TestResolveGenerationInputs:
         # extra alone with no free text → no prompts at all → ValueError
         with pytest.raises(ValueError, match="プリセット"):
             ui_state.resolve_generation_inputs(object(), None, ["extra"], "")
+
+
+class TestGalleryOverlayHelpers:
+    STORE = {"face": "m", "hair": "m", "eyes": "m", "extra": "m"}
+
+    def test_gallery_visible_ids_follows_active_order(self):
+        assert ui_state.gallery_visible_ids(self.STORE, ["hair", "face"]) == ["hair", "face"]
+
+    def test_gallery_visible_ids_skips_missing(self):
+        assert ui_state.gallery_visible_ids(self.STORE, ["face", "nope"]) == ["face"]
+
+    def test_gallery_visible_ids_empty_store(self):
+        assert ui_state.gallery_visible_ids({}, ["face"]) == []
+        assert ui_state.gallery_visible_ids(None, ["face"]) == []
+
+    def test_gallery_flat_index_int(self):
+        assert ui_state.gallery_flat_index(2) == 2
+
+    def test_gallery_flat_index_row_col(self):
+        assert ui_state.gallery_flat_index((1, 2), columns=5) == 7
+
+    def test_gallery_index_at_maps_active_order(self):
+        active = ["hair", "face", "extra"]
+        assert ui_state.gallery_index_at(0, self.STORE, active) == "hair"
+        assert ui_state.gallery_index_at(1, self.STORE, active) == "face"
+        assert ui_state.gallery_index_at((0, 2), self.STORE, active) == "extra"
+
+    def test_gallery_index_at_out_of_range(self):
+        assert ui_state.gallery_index_at(9, self.STORE, ["face"]) is None
+        assert ui_state.gallery_index_at(-1, self.STORE, ["face"]) is None
+        assert ui_state.gallery_index_at("x", self.STORE, ["face"]) is None
+
+    def test_overlay_label_modes(self):
+        assert ui_state.overlay_label("multi") == "オーバーレイ（色分け）"
+        assert ui_state.overlay_label("single", "face") == "オーバーレイ — 顔 (face)"
+        assert ui_state.overlay_label("single", "extra", {"extra": "cat ears"}) == "オーバーレイ — cat ears (extra)"
+
+    def test_build_color_legend_html(self):
+        html = ui_state.build_color_legend_html(["face", "hair"])
+        assert "#ff5252" in html  # face red
+        assert "#ffc107" in html  # hair amber
+        assert "顔" in html and "髪" in html
+
+    def test_build_color_legend_html_empty(self):
+        assert ui_state.build_color_legend_html([]) == ""
 
 
 class TestBuildActiveChoices:

@@ -143,3 +143,39 @@ def test_process_pipeline_feather_order_morph_then_feather():
     # dilated ring just outside the eroded single pixel must exist but be soft
     ring = out[12:20, 12]
     assert (ring > 0).any() and (ring < 255).any()
+
+
+def test_make_multi_overlay_uses_concept_colors():
+    base = Image.new("RGB", (16, 16), (0, 0, 0))
+    face = make_mask((16, 16), [(0, 0)])
+    hair = make_mask((16, 16), [(8, 8)])
+    ov = postprocess.make_multi_overlay(base, {"face": face, "hair": hair}, alpha=1.0)
+    assert ov.size == base.size
+    # face palette is (255, 82, 82), hair is (255, 193, 7)
+    fr, fg, fb = ov.getpixel((0, 0))
+    hr, hg, hb = ov.getpixel((8, 8))
+    assert fr > 200 and abs(fg - 82) < 30 and abs(fb - 82) < 30
+    assert hr > 200 and abs(hg - 193) < 30 and abs(hb - 7) < 30
+
+
+def test_make_multi_overlay_empty_returns_base():
+    base = Image.new("RGB", (8, 8), (10, 20, 30))
+    ov = postprocess.make_multi_overlay(base, {}, alpha=0.45)
+    assert ov.getpixel((0, 0)) == (10, 20, 30)
+
+
+def test_make_multi_overlay_later_concept_wins_overlap():
+    base = Image.new("RGB", (4, 4), (0, 0, 0))
+    both = make_mask((4, 4), [(1, 1)])
+    ov = postprocess.make_multi_overlay(base, {"face": both, "hair": both}, alpha=1.0)
+    r, g, b = ov.getpixel((1, 1))
+    # hair paints after face, so hair color (255, 193, 7) wins the overlap
+    assert r > 200 and abs(g - 193) < 30 and abs(b - 7) < 30
+
+
+def test_make_multi_overlay_resizes_mask():
+    base = Image.new("RGB", (16, 16), (0, 0, 0))
+    small = make_mask((8, 8), [(0, 0)])
+    ov = postprocess.make_multi_overlay(base, {"face": small}, alpha=1.0)
+    assert ov.size == (16, 16)
+    assert ov.getpixel((0, 0))[0] > 100

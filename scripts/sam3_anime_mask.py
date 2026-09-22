@@ -34,36 +34,54 @@ _INPAINT_MASK: Any = None
 _CANVAS_BACKGROUNDS: list[Any] = []
 
 
-def _inside_img2img(component) -> bool:
-    """True if the component is (or is likely) inside the img2img tab.
+def _node_source_blob(node) -> str:
+    """Collect id / label / class text used to classify image sources."""
+    parts: list[str] = []
+    for attr in ("elem_id", "label", "elem_classes"):
+        value = getattr(node, attr, None)
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, (list, tuple)):
+            parts.extend(str(item) for item in value)
+    return " ".join(parts)
 
-    Python sees the Gradio block tree, not the DOM. We walk the parent chain
-    for WebUI tab containers: any ancestor whose elem_id mentions "txt2img"
-    excludes the component (txt2img tab / its canvases), while an ancestor
-    mentioning "img2img" (e.g. tab_img2img) or the img_inpaint_* ids confirms
-    inclusion. Unknown block trees default to include, so an unexpected
-    Forge build degrades to the old (capture-all) behavior instead of
-    silently losing the auto-read feature.
-    """
-    eid = getattr(component, "elem_id", None) or ""
-    if eid.startswith("img_inpaint"):
-        return True
+
+def _parent_id_chain(component, limit: int = 50) -> list[str]:
+    ids: list[str] = []
     try:
         node = getattr(component, "parent", None)
         depth = 0
-        while node is not None and depth < 50:
+        while node is not None and depth < limit:
             pid = getattr(node, "elem_id", None)
             if isinstance(pid, str):
-                low = pid.lower()
-                if "txt2img" in low:
-                    return False
-                if "img2img" in low:
-                    return True
+                ids.append(pid)
+            # Labels catch accordion titles like "ControlNet" with no elem_id.
+            label = getattr(node, "label", None)
+            if isinstance(label, str) and label:
+                ids.append(label)
             node = getattr(node, "parent", None)
             depth += 1
     except Exception:
         pass
-    return True
+    return ids
+
+
+def _inside_img2img(component) -> bool:
+    """True only for legitimate img2img init canvases.
+
+    Rejects ControlNet / third-party unit images and txt2img canvases.
+    Unknown block trees are rejected too — grabbing a random image is worse
+    than asking the user to set the extension 参照画像 or img2img init.
+    """
+    from sam3_anime import ui_state
+
+    eid = getattr(component, "elem_id", None) or ""
+    parents = _parent_id_chain(component)
+    return ui_state.accepts_as_img2img_init(
+        eid,
+        parents,
+        class_blob=_node_source_blob(component),
+    )
 
 
 def _capture_inpaint_components(component, **kwargs) -> None:
@@ -130,6 +148,7 @@ class Sam3AnimeMaskScript(scripts.Script):
             gr.Markdown(
                 "画像が空なら img2img を参照。未ロードでも Generate で自動ロード。"
                 "自由入力はカンマ分割（`extra` 不要）。プレビュー画像はクリックで拡大。"
+                "オーバーレイはコンセプト別の色分け表示。個別マスクをクリックで単体表示。"
             )
 
             # --- model ---
@@ -165,14 +184,19 @@ class Sam3AnimeMaskScript(scripts.Script):
 
             # --- input + presets side by side ---
             with gr.Row():
-                input_image = gr.Image(
-                    label="参照画像（クリックで拡大）",
-                    type="pil",
-                    image_mode="RGB",
-                    height=220,
-                    elem_id=f"sam3_anime_input_{tab}",
-                    scale=1,
-                )
+                with gr.Column(scale=1):
+                    input_image = gr.Image(
+                        label="参照画像（クリックで拡大）",
+                        type="pil",
+                        image_mode="RGB",
+                        height=220,
+                        elem_id=f"sam3_anime_input_{tab}",
+                    )
+                    load_ref_btn = gr.Button(
+                        "img2img から取得",
+                        elem_id=f"sam3_anime_loadref_{tab}",
+                        size="sm",
+                    )
                 with gr.Column(scale=1):
                     preset_ids = [p[0] for p in constants.PRESETS]
                     preset_labels = [f"{p[1]} ({p[0]})" if p[0] != "extra" else p[1] for p in constants.PRESETS]
@@ -242,6 +266,13 @@ class Sam3AnimeMaskScript(scripts.Script):
                 value=[],
                 elem_id=f"sam3_anime_active_{tab}",
             )
+            with gr.Row(elem_id=f"sam3_anime_quick_{tab}"):
+                quick_all_btn = gr.Button("全ON", size="sm", scale=1)
+                quick_none_btn = gr.Button("全OFF", size="sm", scale=1)
+                quick_face_btn = gr.Button("顔まわり", size="sm", scale=1)
+                quick_person_btn = gr.Button("人物", size="sm", scale=1)
+                quick_invert_btn = gr.Button("反転", size="sm", scale=1)
+            legend_md = gr.Markdown("", elem_id=f"sam3_anime_legend_{tab}")
             with gr.Row():
                 combined_img = gr.Image(
                     label="合成マスク（クリックで拡大）",
@@ -250,17 +281,23 @@ class Sam3AnimeMaskScript(scripts.Script):
                     elem_id=f"sam3_anime_combined_{tab}",
                     scale=1,
                 )
-                overlay_img = gr.Image(
-                    label="オーバーレイ（クリックで拡大）",
-                    type="pil",
-                    height=260,
-                    elem_id=f"sam3_anime_overlay_{tab}",
-                    scale=1,
-                )
+                with gr.Column(scale=1):
+                    overlay_img = gr.Image(
+                        label="オーバーレイ（色分け・クリックで拡大）",
+                        type="pil",
+                        height=260,
+                        elem_id=f"sam3_anime_overlay_{tab}",
+                    )
+                    show_color_btn = gr.Button(
+                        "色分け表示に戻す",
+                        size="sm",
+                        elem_id=f"sam3_anime_showcolor_{tab}",
+                    )
 
             # Hidden store: processed image for export / re-postprocess
             store_image = gr.State(None)
             store_masks = gr.State({})  # {id: PIL L} after last generate (pre postprocess)
+            store_labels = gr.State({})  # {concept_id: display label} after last generate
             # JS → Python transfer for Forge Canvas image (base64 data URL)
             canvas_b64 = gr.Textbox(value="", visible=False, elem_id=f"sam3_anime_canvas_b64_{tab}")
 
@@ -384,6 +421,73 @@ class Sam3AnimeMaskScript(scripts.Script):
             refresh_ckpt_btn.click(fn=_refresh_ckpts, inputs=[], outputs=[ckpt], queue=False)
             ckpt.change(fn=_on_ckpt_change, inputs=[ckpt], outputs=[ckpt_note], queue=False)
 
+            # Fill 参照画像 from img2img so the user can verify the source
+            # before Generate (same strict source rules as generate).
+            def _do_load_ref(canvas_data):
+                image, notes = _resolve_reference_image(None, canvas_data)
+                if image is None:
+                    return (
+                        gr.update(),
+                        "参照画像が見つかりません。img2img に画像を置くか、参照画像へドロップしてください。",
+                    )
+                note = " ".join(notes) if notes else "参照画像を設定しました"
+                return image.convert("RGB"), f"参照画像を読み込み | {note}"
+
+            # JS only fills the hidden canvas textbox; Python resolves sources.
+            _js_canvas_only = (
+                "(canvas) => {"
+                " try {"
+                "  const root = (typeof gradioApp === 'function') ? gradioApp() : document;"
+                "  const EXCLUDE = /controlnet|control_net|control-net|alwayson|t2i_adapter"
+                "|ip[_-]?adapter|reference_only|animatediff|reactor|adetailer/i;"
+                "  function blobOf(n) {"
+                "    const id = n.id || '';"
+                "    let cls = '';"
+                "    if (typeof n.className === 'string') cls = n.className;"
+                "    else if (n.className && n.className.baseVal) cls = n.className.baseVal;"
+                "    const label = (n.getAttribute && n.getAttribute('aria-label')) || '';"
+                "    return (id + ' ' + cls + ' ' + label).toLowerCase();"
+                "  }"
+                "  function excluded(el) {"
+                "    let n = el;"
+                "    while (n && n !== root) {"
+                "      if (EXCLUDE.test(blobOf(n))) return true;"
+                "      n = n.parentElement;"
+                "    }"
+                "    return false;"
+                "  }"
+                "  function inImg2img(el) {"
+                "    let n = el;"
+                "    let saw = false;"
+                "    while (n && n !== root) {"
+                "      const id = (n.id || '').toLowerCase();"
+                "      if (id.indexOf('txt2img') !== -1) return false;"
+                "      if (id.indexOf('img_inpaint') === 0) return true;"
+                "      if (id.indexOf('img2img') !== -1 || id === 'mode_img2img') saw = true;"
+                "      n = n.parentElement;"
+                "    }"
+                "    return saw;"
+                "  }"
+                "  const areas = root.querySelectorAll('.logical_image_background textarea');"
+                "  let preferred = '';"
+                "  for (const ta of areas) {"
+                "    if (!ta.value || ta.value.indexOf('data:image/') !== 0) continue;"
+                "    if (excluded(ta)) continue;"
+                "    if (!inImg2img(ta)) continue;"
+                "    preferred = ta.value;"
+                "    break;"
+                "  }"
+                "  return [preferred || canvas || ''];"
+                " } catch (e) { return [canvas || '']; }"
+                "}"
+            )
+            load_ref_btn.click(
+                fn=_do_load_ref,
+                inputs=[canvas_b64],
+                outputs=[input_image, status],
+                _js=_js_canvas_only,
+            )
+
             def _generate(
                 image,
                 canvas_data,
@@ -412,6 +516,9 @@ class Sam3AnimeMaskScript(scripts.Script):
                         no_change,
                         no_change,
                         no_change,
+                        no_change,
+                        no_change,
+                        no_change,
                         status_message,
                         *buttons_back,
                     )
@@ -422,13 +529,11 @@ class Sam3AnimeMaskScript(scripts.Script):
                 masks_state: dict = {}
                 used_image = None
                 notes: list[str] = []
+                labels_state: dict = {}
+                explicit_image = image is not None
 
-                if image is None and canvas_data:
-                    image = _decode_data_url_to_pil(canvas_data)
-                    if image is not None:
-                        notes.append("img2img canvas を使用")
-                if image is None:
-                    image = _try_img2img_init()
+                image, resolve_notes = _resolve_reference_image(image, canvas_data)
+                notes.extend(resolve_notes)
 
                 # Shared pure-logic resolver (raises ValueError with a
                 # UI-safe message when there is no image or no prompts).
@@ -439,7 +544,10 @@ class Sam3AnimeMaskScript(scripts.Script):
                 if resolved == "CANVAS":
                     # Canvas held a data URL we failed to decode earlier —
                     # resolver marked it so we surface the same guidance.
-                    return _fail("No image. 拡張内の Image か img2img の init image を使ってください。")
+                    return _fail(
+                        "No image. 拡張内の「参照画像」か img2img の init image を使ってください。"
+                        "（ControlNet など他拡張の画像は自動参照しません）"
+                    )
                 image = resolved
 
                 used_image = image.convert("RGB")
@@ -488,15 +596,10 @@ class Sam3AnimeMaskScript(scripts.Script):
 
                 active_choices = ui_state.build_active_choices(processed, labels)
                 active_value = list(processed)
+                labels_state = labels
 
-                # combined preview overlay (OR of active masks)
-                if combined is not None:
-                    overlay = postprocess.make_overlay(
-                        used_image,
-                        combined,
-                        concept_id="extra",
-                        alpha=0.45,
-                    )
+                # Multi-color overlay: each concept keeps its palette color.
+                overlay = postprocess.make_multi_overlay(used_image, processed, alpha=0.45)
 
                 status_msg = ui_state.build_status_message(len(processed), notes)
                 if cancelled:
@@ -516,38 +619,66 @@ class Sam3AnimeMaskScript(scripts.Script):
                 return (
                     gallery_out,
                     combined,
-                    overlay,
+                    gr.update(value=overlay, label=ui_state.overlay_label("multi")),
+                    used_image if not explicit_image else no_change,
                     used_image,
                     masks_state,
+                    labels_state,
                     gr.update(choices=active_choices, value=active_value),
+                    ui_state.build_color_legend_html(list(processed), labels),
                     status_msg,
                     *buttons_back,
                 )
 
             # JS runs first: extract Forge Canvas base64, return as extra input
             # Gradio 4: _js return value replaces the inputs passed to fn.
-            # Prefer a canvas under the img2img tab (its tab panel contains
-            # #mode_img2img); fall back to the first data URL only when the
-            # DOM layout is unrecognized, so txt2img canvases and other
-            # extensions' images are never preferred.
+            # Only accept canvases positively identified as img2img init
+            # sources. Never fall back to "first data URL anywhere" — that
+            # used to pull ControlNet / other extension images.
             _js_with_canvas = (
                 "(img, canvas, ckpt, presets, free, thr, mside, invert, dilate, feather) => {"
                 " try {"
                 "  const root = (typeof gradioApp === 'function') ? gradioApp() : document;"
-                "  const areas = root.querySelectorAll('.logical_image_background textarea');"
-                "  let preferred = ''; let fallback = '';"
-                "  for (const ta of areas) {"
-                "    if (!ta.value || !ta.value.startsWith('data:image/')) continue;"
-                "    if (!fallback) fallback = ta.value;"
-                "    let node = ta.parentElement;"
-                "    while (node && node !== root) {"
-                "      if (node.querySelector && node.querySelector('#mode_img2img')) { preferred = ta.value; break; }"
-                "      node = node.parentElement;"
-                "    }"
-                "    if (preferred) break;"
+                "  const EXCLUDE = /controlnet|control_net|control-net|alwayson|t2i_adapter"
+                "|ip[_-]?adapter|reference_only|animatediff|reactor|adetailer/i;"
+                "  function blobOf(n) {"
+                "    const id = n.id || '';"
+                "    let cls = '';"
+                "    if (typeof n.className === 'string') cls = n.className;"
+                "    else if (n.className && n.className.baseVal) cls = n.className.baseVal;"
+                "    const label = (n.getAttribute && n.getAttribute('aria-label')) || '';"
+                "    return (id + ' ' + cls + ' ' + label).toLowerCase();"
                 "  }"
-                "  const data = preferred || fallback;"
-                "  if (!img && data) canvas = data;"
+                "  function excluded(el) {"
+                "    let n = el;"
+                "    while (n && n !== root) {"
+                "      if (EXCLUDE.test(blobOf(n))) return true;"
+                "      n = n.parentElement;"
+                "    }"
+                "    return false;"
+                "  }"
+                "  function inImg2img(el) {"
+                "    let n = el;"
+                "    let saw = false;"
+                "    while (n && n !== root) {"
+                "      const id = (n.id || '').toLowerCase();"
+                "      if (id.indexOf('txt2img') !== -1) return false;"
+                "      if (id.indexOf('img_inpaint') === 0) return true;"
+                "      if (id.indexOf('img2img') !== -1 || id === 'mode_img2img') saw = true;"
+                "      n = n.parentElement;"
+                "    }"
+                "    return saw;"
+                "  }"
+                "  const areas = root.querySelectorAll('.logical_image_background textarea');"
+                "  let preferred = '';"
+                "  for (const ta of areas) {"
+                "    if (!ta.value || ta.value.indexOf('data:image/') !== 0) continue;"
+                "    if (excluded(ta)) continue;"
+                "    if (!inImg2img(ta)) continue;"
+                "    preferred = ta.value;"
+                "    break;"
+                "  }"
+                "  if (!img && preferred) canvas = preferred;"
                 " } catch (e) {}"
                 " return [img, canvas, ckpt, presets, free, thr, mside, invert, dilate, feather];"
                 "}"
@@ -585,9 +716,12 @@ class Sam3AnimeMaskScript(scripts.Script):
                     gallery,
                     combined_img,
                     overlay_img,
+                    input_image,
                     store_image,
                     store_masks,
+                    store_labels,
                     active_masks,
+                    legend_md,
                     status,
                     generate_btn,
                     load_btn,
@@ -598,14 +732,37 @@ class Sam3AnimeMaskScript(scripts.Script):
             )
 
             # Re-run postprocess when sliders / active mask selection change
-            def _repost(store_img, store_m, active, dil_amt, feather_amt, do_invert):
-                if not store_m:
-                    return None, None, None
-                from sam3_anime import postprocess
+            def _multi_overlay_update(store_img, store_m, active, labels, dil_amt, feather_amt, do_invert):
+                from sam3_anime import postprocess, ui_state
 
-                selected = [cid for cid in (active or []) if cid in store_m]
+                selected = ui_state.gallery_visible_ids(store_m, active)
+                if store_img is None or not selected:
+                    return (
+                        gr.update(value=None, label=ui_state.overlay_label("multi")),
+                        ui_state.build_color_legend_html([]),
+                    )
+                subset = {cid: store_m[cid] for cid in selected}
+                processed, _combined = postprocess.process_pipeline(
+                    subset,
+                    dilate=int(dil_amt),
+                    feather=int(feather_amt),
+                    invert=bool(do_invert),
+                )
+                overlay = postprocess.make_multi_overlay(store_img, processed, alpha=0.45)
+                return (
+                    gr.update(value=overlay, label=ui_state.overlay_label("multi")),
+                    ui_state.build_color_legend_html(list(processed), labels),
+                )
+
+            def _repost(store_img, store_m, active, dil_amt, feather_amt, do_invert, labels):
+                from sam3_anime import postprocess, ui_state
+
+                if not store_m:
+                    return [], None, gr.update(value=None, label=ui_state.overlay_label("multi")), ""
+
+                selected = ui_state.gallery_visible_ids(store_m, active)
                 if not selected:
-                    return [], None, None
+                    return [], None, gr.update(value=None, label=ui_state.overlay_label("multi")), ""
                 subset = {cid: store_m[cid] for cid in selected}
                 processed, combined = postprocess.process_pipeline(
                     subset,
@@ -613,26 +770,61 @@ class Sam3AnimeMaskScript(scripts.Script):
                     feather=int(feather_amt),
                     invert=bool(do_invert),
                 )
-                gallery_out = [(m, f"{constants.label_for_id(cid)} ({cid})") for cid, m in processed.items()]
-                overlay = None
-                if combined is not None and store_img is not None:
-                    overlay = postprocess.make_overlay(store_img, combined, "extra", 0.45)
-                return gallery_out, combined, overlay
+                gallery_out = [
+                    (m, f"{constants.label_for_id(cid, labels)} ({cid})") for cid, m in processed.items()
+                ]
+                overlay_update, legend = _multi_overlay_update(
+                    store_img, store_m, active, labels, dil_amt, feather_amt, do_invert
+                )
+                return gallery_out, combined, overlay_update, legend
 
             def _repost_inputs():
-                return [store_image, store_masks, active_masks, dilate, feather, invert]
+                return [store_image, store_masks, active_masks, dilate, feather, invert, store_labels]
+
+            def _make_quick_select(mode: str):
+                def _fn(store_img, store_m, current, dil_amt, feather_amt, do_invert, labels):
+                    from sam3_anime import ui_state
+
+                    available = list(store_m.keys()) if store_m else []
+                    selected = ui_state.quick_select_active(mode, available, current or [])
+                    gallery_out, combined, overlay_update, legend = _repost(
+                        store_img, store_m, selected, dil_amt, feather_amt, do_invert, labels
+                    )
+                    return gr.update(value=selected), gallery_out, combined, overlay_update, legend
+
+                return _fn
+
+            for _mode, _btn in (
+                ("all", quick_all_btn),
+                ("none", quick_none_btn),
+                ("face", quick_face_btn),
+                ("person", quick_person_btn),
+                ("invert", quick_invert_btn),
+            ):
+                _btn.click(
+                    fn=_make_quick_select(_mode),
+                    inputs=_repost_inputs(),
+                    outputs=[active_masks, gallery, combined_img, overlay_img, legend_md],
+                    show_progress="hidden",
+                )
 
             # Live update while dragging (not only on release)
             dilate.input(
                 fn=_repost,
                 inputs=_repost_inputs(),
-                outputs=[gallery, combined_img, overlay_img],
+                outputs=[gallery, combined_img, overlay_img, legend_md],
+                show_progress="hidden",
+            )
+            feather.input(
+                fn=_repost,
+                inputs=_repost_inputs(),
+                outputs=[gallery, combined_img, overlay_img, legend_md],
                 show_progress="hidden",
             )
             invert.change(
                 fn=_repost,
                 inputs=_repost_inputs(),
-                outputs=[gallery, combined_img, overlay_img],
+                outputs=[gallery, combined_img, overlay_img, legend_md],
                 show_progress="hidden",
             )
             # .input (not .change): user clicks only. Prevents the double
@@ -641,7 +833,54 @@ class Sam3AnimeMaskScript(scripts.Script):
             active_masks.input(
                 fn=_repost,
                 inputs=_repost_inputs(),
-                outputs=[gallery, combined_img, overlay_img],
+                outputs=[gallery, combined_img, overlay_img, legend_md],
+                show_progress="hidden",
+            )
+
+            def _on_gallery_select(
+                evt: gr.SelectData,
+                store_img,
+                store_m,
+                active,
+                labels,
+                dil_amt,
+                feather_amt,
+                do_invert,
+            ):
+                from sam3_anime import postprocess, ui_state
+
+                no_change = gr.update()
+                cid = ui_state.gallery_index_at(evt.index, store_m, active, columns=5)
+                if cid is None or store_img is None or not store_m or cid not in store_m:
+                    return no_change, no_change
+                processed, _combined = postprocess.process_pipeline(
+                    {cid: store_m[cid]},
+                    dilate=int(dil_amt),
+                    feather=int(feather_amt),
+                    invert=bool(do_invert),
+                )
+                # Slightly stronger alpha so a single concept reads clearly.
+                overlay = postprocess.make_overlay(store_img, processed[cid], cid, alpha=0.55)
+                return (
+                    gr.update(value=overlay, label=ui_state.overlay_label("single", cid, labels)),
+                    ui_state.build_color_legend_html([cid], labels),
+                )
+
+            def _show_multi(store_img, store_m, active, labels, dil_amt, feather_amt, do_invert):
+                return _multi_overlay_update(
+                    store_img, store_m, active, labels, dil_amt, feather_amt, do_invert
+                )
+
+            gallery.select(
+                fn=_on_gallery_select,
+                inputs=[store_image, store_masks, active_masks, store_labels, dilate, feather, invert],
+                outputs=[overlay_img, legend_md],
+                show_progress="hidden",
+            )
+            show_color_btn.click(
+                fn=_show_multi,
+                inputs=_repost_inputs(),
+                outputs=[overlay_img, legend_md],
                 show_progress="hidden",
             )
 
@@ -824,35 +1063,86 @@ def _decode_data_url_to_pil(value: str) -> Image.Image | None:
         return None
 
 
-def _try_img2img_init() -> Image.Image | None:
-    """Best-effort: read img2img / sketch / inpaint canvas image if extension Image is empty.
+def _resolve_reference_image(image, canvas_data) -> tuple[Image.Image | None, list[str]]:
+    """Resolve the SAM3 reference image and note where it came from.
 
-    Forge Canvas LogicalImage components hold base64 data URLs.
-    Only canvases captured under the img2img tab are used (see
-    _capture_inpaint_components), so txt2img and third-party images are
-    never mistaken for the init image.
-    Creation order: img2img, sketch, inpaint, inpaint_sketch — first non-empty wins.
+    Order: extension 参照画像 → img2img canvas data URL → img2img init /
+    Inpaint upload. Never third-party images.
+    """
+    notes: list[str] = []
+    if image is not None:
+        return image, notes
+    if canvas_data:
+        decoded = _decode_data_url_to_pil(canvas_data)
+        if decoded is not None:
+            notes.append("img2img canvas を使用")
+            return decoded, notes
+    img, init_note = _try_img2img_init()
+    if img is not None and init_note:
+        notes.append(init_note)
+    return img, notes
+
+
+def _value_to_pil(value) -> Image.Image | None:
+    """Best-effort convert a Gradio component value to RGB PIL."""
+    if value is None:
+        return None
+    if isinstance(value, Image.Image):
+        return value.convert("RGB")
+    if isinstance(value, str):
+        img = _decode_data_url_to_pil(value)
+        if img is not None:
+            return img
+        # Gradio Image may hold a filesystem path.
+        try:
+            path = Path(value)
+            if path.is_file():
+                with Image.open(path) as im:
+                    return im.convert("RGB")
+        except Exception:
+            pass
+        return None
+    if isinstance(value, dict):
+        for key in ("image", "value", "composite", "background"):
+            img = _value_to_pil(value.get(key))
+            if img is not None:
+                return img
+        return None
+    try:
+        import numpy as np
+
+        arr = np.asarray(value)
+        if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+            return Image.fromarray(arr[..., :3], mode="RGB")
+        if arr.ndim == 2:
+            return Image.fromarray(arr, mode="L").convert("RGB")
+    except Exception:
+        pass
+    return None
+
+
+def _try_img2img_init() -> tuple[Image.Image | None, str | None]:
+    """Best-effort: read img2img init if extension Image is empty.
+
+    Sources, in order (never ControlNet / third-party / txt2img):
+    1. Captured img2img canvases (img2img / sketch / inpaint / inpaint_sketch)
+    2. Inpaint upload base (`img_inpaint_base`)
+    Returns (image_or_None, note_or_None).
     """
     for comp in _CANVAS_BACKGROUNDS:
         try:
-            value = getattr(comp, "value", None)
-            if value is None:
-                continue
-            if isinstance(value, Image.Image):
-                return value.convert("RGB")
-            if isinstance(value, str):
-                img = _decode_data_url_to_pil(value)
-                if img is not None:
-                    return img
-            # numpy path (LogicalImage(numpy=True) not used by default)
-            try:
-                import numpy as np
-
-                arr = np.asarray(value)
-                if arr.ndim == 3 and arr.shape[-1] in (3, 4):
-                    return Image.fromarray(arr[..., :3], mode="RGB")
-            except Exception:
-                pass
+            img = _value_to_pil(getattr(comp, "value", None))
+            if img is not None:
+                return img, "img2img init image を使用"
         except Exception as e:
             _log(f"canvas background read failed: {e}")
-    return None
+
+    if _INPAINT_BASE is not None:
+        try:
+            img = _value_to_pil(getattr(_INPAINT_BASE, "value", None))
+            if img is not None:
+                return img, "Inpaint upload 画像を使用"
+        except Exception as e:
+            _log(f"img_inpaint_base read failed: {e}")
+
+    return None, None

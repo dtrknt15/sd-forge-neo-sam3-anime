@@ -137,6 +137,32 @@ def make_overlay(image: Image.Image, mask: Image.Image, concept_id: str = "extra
     return Image.alpha_composite(base, overlay_img).convert("RGB")
 
 
+def make_multi_overlay(
+    image: Image.Image,
+    masks: dict[str, Image.Image],
+    alpha: float = 0.45,
+) -> Image.Image:
+    """Composite each concept mask in its own palette color.
+
+    Later concepts paint over earlier ones in overlap so every region stays
+    identifiable. Soft (feathered) masks are used as continuous alpha so
+    edges still blend. Empty `masks` returns the base RGB image.
+    """
+    base = np.asarray(image.convert("RGB"), dtype=np.float32)
+    out = base.copy()
+    for cid, mask in masks.items():
+        color = np.array(OVERLAY_PALETTE.get(cid, OVERLAY_PALETTE["extra"]), dtype=np.float32)
+        m = _to_gray(mask)
+        if m.shape != out.shape[:2]:
+            m = np.array(
+                Image.fromarray(m, mode="L").resize((out.shape[1], out.shape[0]), Image.NEAREST),
+                dtype=np.uint8,
+            )
+        a = (m.astype(np.float32) / 255.0 * float(alpha))[..., None]
+        out = out * (1.0 - a) + color * a
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), mode="RGB")
+
+
 def process_pipeline(
     per_concept: dict[str, Image.Image],
     *,
