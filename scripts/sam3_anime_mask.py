@@ -90,16 +90,11 @@ def _capture_inpaint_components(component, **kwargs) -> None:
     classes = list(getattr(component, "elem_classes", None) or kwargs.get("elem_classes") or [])
     if eid == "img_inpaint_base":
         _INPAINT_BASE = component
-        _log("captured img_inpaint_base")
     elif eid == "img_inpaint_mask":
         _INPAINT_MASK = component
-        _log("captured img_inpaint_mask")
     elif "logical_image_background" in classes:
         if _inside_img2img(component):
             _CANVAS_BACKGROUNDS.append(component)
-            _log(f"captured canvas background #{len(_CANVAS_BACKGROUNDS)} ({eid})")
-        else:
-            _log(f"skipped canvas background outside img2img ({eid})")
 
 
 script_callbacks.on_after_component(_capture_inpaint_components)
@@ -954,9 +949,6 @@ class Sam3AnimeMaskScript(scripts.Script):
             export_outputs = [export_status, export_payload]
             if _INPAINT_BASE is not None and _INPAINT_MASK is not None:
                 export_outputs.extend([_INPAINT_BASE, _INPAINT_MASK])
-                _log("export wired to img_inpaint_base / img_inpaint_mask")
-            else:
-                _log("inpaint components not captured; export falls back to PNG + JS")
 
             # Python first: write image+mask into inpaint components / PNG
             export_event = export_btn.click(
