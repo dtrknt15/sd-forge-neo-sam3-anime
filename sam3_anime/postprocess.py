@@ -185,3 +185,33 @@ def process_pipeline(
         out[cid] = m
     combined = combine_masks(list(out.values())) if out else None
     return out, combined
+
+
+def make_cutout(
+    image: Image.Image,
+    mask: Image.Image | np.ndarray,
+    *,
+    crop: bool = True,
+) -> Image.Image:
+    """Cut out the masked region as an RGBA image with transparent background.
+
+    Preserves feathered (soft) mask edges in the alpha channel. When `crop=True`,
+    trims transparent margins tightly to the bounding box of non-zero alpha pixels.
+    """
+    rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    alpha = _to_gray(mask)
+    if alpha.shape != rgb.shape[:2]:
+        alpha = np.array(
+            Image.fromarray(alpha, mode="L").resize((rgb.shape[1], rgb.shape[0]), Image.NEAREST),
+            dtype=np.uint8,
+        )
+    rgba = np.zeros((rgb.shape[0], rgb.shape[1], 4), dtype=np.uint8)
+    non_zero = alpha > 0
+    rgba[non_zero, :3] = rgb[non_zero]
+    rgba[..., 3] = alpha
+    out = Image.fromarray(rgba, mode="RGBA")
+    if crop:
+        bbox = Image.fromarray(alpha, mode="L").getbbox()
+        if bbox is not None:
+            out = out.crop(bbox)
+    return out

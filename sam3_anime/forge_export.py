@@ -19,7 +19,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .postprocess import to_inpaint_mask
+from .postprocess import make_cutout, to_inpaint_mask
 
 
 def _pil_to_b64_png(img: Image.Image) -> str:
@@ -42,12 +42,66 @@ def _timestamped_mask_name() -> str:
     return f"sam3_anime_combined_mask_{stamp}_{ms:03d}_{seq:03d}.png"
 
 
+def _timestamped_cutout_name() -> str:
+    now = time.time()
+    stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
+    ms = int(now * 1000) % 1000
+    seq = next(_NAME_COUNTER) % 1000
+    return f"sam3_anime_cutout_{stamp}_{ms:03d}_{seq:03d}.png"
+
+
 def save_combined_mask(mask: Image.Image, directory: str | Path | None = None) -> Path:
     directory = Path(directory) if directory else Path(tempfile.gettempdir()) / "sam3_anime_masks"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / _timestamped_mask_name()
     to_inpaint_mask(mask).save(path, format="PNG")
     return path
+
+
+def save_cutout(
+    image: Image.Image,
+    mask: Image.Image,
+    directory: str | Path | None = None,
+    *,
+    crop: bool = True,
+) -> Path:
+    directory = Path(directory) if directory else Path(tempfile.gettempdir()) / "sam3_anime_masks"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / _timestamped_cutout_name()
+    make_cutout(image, mask, crop=crop).save(path, format="PNG")
+    return path
+
+
+def export_cutout(
+    image: Image.Image,
+    mask: Image.Image,
+    *,
+    save_dir: str | Path | None = None,
+    crop: bool = True,
+) -> tuple[bool, str, str, Path | None]:
+    """Save cropped transparent cutout PNG + build download payload JSON.
+
+    Returns (ok, status_message, payload_json, png_path).
+    """
+    try:
+        cutout = make_cutout(image, mask, crop=crop)
+        directory = Path(save_dir) if save_dir else Path(tempfile.gettempdir()) / "sam3_anime_masks"
+        directory.mkdir(parents=True, exist_ok=True)
+        png_path = directory / _timestamped_cutout_name()
+        cutout.save(png_path, format="PNG")
+    except Exception as e:
+        return False, f"Cutout failed: could not save cutout PNG ({e})", "", None
+
+    try:
+        b64 = _pil_to_b64_png(cutout)
+    except Exception as e:
+        return False, f"Cutout failed: {e}. 切り抜き PNG は保存済み: `{png_path}`", "", png_path
+
+    import json
+
+    payload = json.dumps({"image": b64, "filename": png_path.name})
+    msg = f"切り抜き PNG を保存しました: `{png_path}` ({cutout.width}×{cutout.height})"
+    return True, msg, payload, png_path
 
 
 def build_mask_rgba(mask: Image.Image) -> Image.Image:

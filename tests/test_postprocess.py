@@ -179,3 +179,42 @@ def test_make_multi_overlay_resizes_mask():
     ov = postprocess.make_multi_overlay(base, {"face": small}, alpha=1.0)
     assert ov.size == (16, 16)
     assert ov.getpixel((0, 0))[0] > 100
+
+
+def test_make_cutout_crops_and_sets_alpha():
+    base = Image.new("RGB", (16, 16), (10, 20, 30))
+    # Draw a 4x6 region at x=3..6, y=5..10
+    mask_arr = np.zeros((16, 16), dtype=np.uint8)
+    mask_arr[5:11, 3:7] = 255
+    mask = Image.fromarray(mask_arr, mode="L")
+    # Put a transparent hole inside the bounding box at (x=4, y=6)
+    mask.putpixel((4, 6), 0)
+
+    cut = postprocess.make_cutout(base, mask, crop=True)
+    assert cut.mode == "RGBA"
+    assert cut.size == (4, 6)
+    # Top-left of cropped box corresponds to (3, 5) -> opaque (10, 20, 30, 255)
+    assert cut.getpixel((0, 0)) == (10, 20, 30, 255)
+    # Hole at (4, 6) -> local (1, 1) -> transparent (0, 0, 0, 0)
+    assert cut.getpixel((1, 1)) == (0, 0, 0, 0)
+
+
+def test_make_cutout_preserves_feathered_alpha_and_no_crop():
+    base = Image.new("RGB", (8, 8), (100, 150, 200))
+    mask_arr = np.zeros((8, 8), dtype=np.uint8)
+    mask_arr[2, 2] = 128
+    mask = Image.fromarray(mask_arr, mode="L")
+
+    cut = postprocess.make_cutout(base, mask, crop=False)
+    assert cut.size == (8, 8)
+    assert cut.getpixel((2, 2)) == (100, 150, 200, 128)
+    assert cut.getpixel((0, 0)) == (0, 0, 0, 0)
+
+
+def test_make_cutout_empty_mask_does_not_crash():
+    base = Image.new("RGB", (8, 8), (50, 60, 70))
+    empty = Image.new("L", (8, 8), 0)
+    cut = postprocess.make_cutout(base, empty, crop=True)
+    assert cut.mode == "RGBA"
+    assert cut.size == (8, 8)
+    assert (np.array(cut)[..., 3] == 0).all()

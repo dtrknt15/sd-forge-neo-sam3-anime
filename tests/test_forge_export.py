@@ -105,3 +105,29 @@ def test_save_combined_mask_timestamped_name_is_unique(tmp_path):
     time.sleep(0.002)
     forge_export.save_combined_mask(mask, tmp_path)
     assert len(paths) == 4
+
+
+def test_save_and_export_cutout(tmp_path):
+    img = Image.new("RGB", (10, 10), (200, 100, 50))
+    mask = Image.new("L", (10, 10), 0)
+    mask.putpixel((3, 4), 255)
+    mask.putpixel((4, 5), 255)
+
+    saved = forge_export.save_cutout(img, mask, tmp_path, crop=True)
+    assert saved.is_file()
+    assert saved.name.startswith("sam3_anime_cutout_")
+    with Image.open(saved) as im:
+        assert im.mode == "RGBA"
+        assert im.size == (2, 2)
+        assert im.getpixel((0, 0)) == (200, 100, 50, 255)
+        assert im.getpixel((1, 0)) == (0, 0, 0, 0)
+
+    ok, msg, payload, png_path = forge_export.export_cutout(img, mask, save_dir=tmp_path, crop=True)
+    assert ok
+    assert png_path is not None and png_path.is_file()
+    assert "2×2" in msg
+    data = json.loads(payload)
+    assert data["filename"] == png_path.name
+    decoded = Image.open(io.BytesIO(base64.b64decode(data["image"])))
+    assert decoded.mode == "RGBA"
+    assert decoded.size == (2, 2)

@@ -17,7 +17,7 @@ Anime-oriented inpaint mask helper for **Stable Diffusion WebUI Forge Neo** (Gra
 4. Generate per-concept masks, preview, dilate/erode, feather, invert
 5. Overlay shows each concept in its own color (legend under the masks). Click a gallery item to preview that concept alone
 6. After generate, toggle which concept masks are used (no re-inference); active masks are combined (max blend) automatically
-7. Export image + mask to **img2img → Inpaint upload** (feather follows the processed mask, so a soft edge is exported as-is)
+7. Export image + mask to **img2img → Inpaint upload** (feather follows the processed mask, so a soft edge is exported as-is), or download a tightly cropped **transparent cutout PNG** of the selected elements
 8. **Cancel** stops a running generation at the next prompt boundary; masks completed so far are kept
 9. Unload / Free VRAM when done
 
@@ -80,6 +80,7 @@ Links:
    - If the region looks inverted in the Inpaint upload preview, also check `inpainting_mask_invert` (Settings)
    - On **img2img**: Export is primary
    - On **txt2img**: Download mask PNG is primary; Export switches to img2img Inpaint upload
+   - **Download cutout PNG（透過切り抜き）**: downloads the selected region as a transparent RGBA PNG, tightly cropped to the bounding box
 7. Optional: **Unload SAM3** / **Free VRAM**
 
 **Cancel** (next to Unload / Free VRAM): during a long generate, press Cancel to stop after the current prompt. Remaining prompts are listed as `Cancelled: …` in the status line and masks generated so far are kept — you can preview/export the partial result. The currently running prompt (1–few seconds) cannot be aborted mid-flight; pressing Cancel when nothing is running just reports that.
@@ -153,7 +154,7 @@ SAM 3 itself is by Meta and uses the **SAM License** — see [facebookresearch/s
 4. コンセプトごとのマスク生成、プレビュー、膨張/収縮、feather（輪郭ぼかし）、反転
 5. オーバーレイはコンセプト別の色分け表示（凡例つき）。個別マスクをクリックで単体表示
 6. 生成後に「使用するマスク」で個別ON/OFF（再推論なし）。使用中のマスクは自動的に合成（最大値ブレンド）されます
-7. 画像 + マスクを **img2img → Inpaint upload** へ Export（feather 処理後のマスクがそのまま送られるため、ソフト境界も反映）
+7. 画像 + マスクを **img2img → Inpaint upload** へ Export（feather 処理後のマスクがそのまま送られるため、ソフト境界も反映）、または選択要素を余白カットした**透過切り抜き PNG** としてダウンロード
 8. **Cancel** で実行中の生成を次のプロンプト境界で停止。完了済みのマスクは保持されます
 9. 終わったら Unload / Free VRAM
 
@@ -215,6 +216,7 @@ Hugging Face 上の SAM3 重みは **Gated** です。申請して承認され�
    - Inpaint upload のプレビューで白黒が逆に見える場合は設定の `inpainting_mask_invert` も確認
    - **img2img** タブ: Export が主ボタン
    - **txt2img** タブ: マスク PNG Download が主。Export を押すと img2img Inpaint upload へ自動切替
+   - **Download cutout PNG（透過切り抜き）**: 選択中の要素の周囲ギリギリでトリミングした透過 PNG をダウンロード
 7. 任意で **Unload SAM3** / **Free VRAM**
 
 **Cancel**（Unload / Free VRAM の隣）: 生成中に押すと現在のプロンプト完了後に停止します。未実行のプロンプトはステータスに `Cancelled: …` と表示され、**生成済みのマスクはそのまま保持**されるため、途中結果のプレビュー/Export が可能です。実行中の 1 プロンプト自体（1〜数秒）は中断できません。生成していないときに押すとその旨が表示されるだけです。

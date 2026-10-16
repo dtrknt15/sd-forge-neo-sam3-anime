@@ -59,6 +59,37 @@ function sam3AnimeInjectInpaint(payload) {
   return okBase && okMask ? "ok" : "file_input_missing";
 }
 
+function sam3AnimeDownloadCutout(payload) {
+  if (!payload) return "no_payload";
+  let data = payload;
+  if (typeof payload === "string") {
+    try {
+      data = JSON.parse(payload);
+    } catch (e) {
+      return "bad_json";
+    }
+  }
+  const b64 = data && data.image;
+  const filename = (data && data.filename) || "sam3_anime_cutout.png";
+  if (!b64) return "missing_b64";
+
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  const blob = new Blob([arr], { type: "image/png" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return "ok";
+}
+
 if (typeof window !== "undefined") {
   window.sam3AnimeInjectInpaint = sam3AnimeInjectInpaint;
+  window.sam3AnimeDownloadCutout = sam3AnimeDownloadCutout;
 }
+

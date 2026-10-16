@@ -313,6 +313,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                 export_btn_kwargs = {"variant": "secondary"}
                 download_btn_kwargs = {"variant": "primary"}
 
+            cutout_label = "Download cutout PNG（透過切り抜き）"
             gr.Markdown(export_hint, elem_id=f"sam3_anime_export_hint_{tab}")
             with gr.Row():
                 if is_img2img:
@@ -320,13 +321,16 @@ class Sam3AnimeMaskScript(scripts.Script):
                     download_btn = gr.DownloadButton(
                         download_label, elem_id=f"sam3_anime_dl_{tab}", **download_btn_kwargs
                     )
+                    cutout_btn = gr.Button(cutout_label, elem_id=f"sam3_anime_cutout_{tab}", variant="secondary")
                 else:
                     download_btn = gr.DownloadButton(
                         download_label, elem_id=f"sam3_anime_dl_{tab}", **download_btn_kwargs
                     )
+                    cutout_btn = gr.Button(cutout_label, elem_id=f"sam3_anime_cutout_{tab}", variant="secondary")
                     export_btn = gr.Button(export_label, elem_id=f"sam3_anime_export_{tab}", **export_btn_kwargs)
             export_status = gr.Markdown("", elem_id=f"sam3_anime_export_status_{tab}")
             export_payload = gr.Textbox(visible=False, elem_id=f"sam3_anime_export_payload_{tab}")
+            cutout_payload = gr.Textbox(visible=False, elem_id=f"sam3_anime_cutout_payload_{tab}")
 
             # Button lockout while SAM3 is busy. Generate's first .click
             # handler fires immediately (queue=False) to disable
@@ -946,6 +950,25 @@ class Sam3AnimeMaskScript(scripts.Script):
                     _log(f"download save failed: {e}")
                     return None
 
+            def _prepare_cutout(store_img, combined, store_m, active):
+                from sam3_anime import forge_export, postprocess
+
+                if store_img is None:
+                    return "Cutout failed: No image", ""
+
+                mask = combined
+                if mask is None and store_m:
+                    selected = [cid for cid in (active or []) if cid in store_m] or list(store_m.keys())
+                    if selected:
+                        mask = postprocess.combine_masks([store_m[cid] for cid in selected])
+                if mask is None:
+                    return "Cutout failed: No mask（使用するマスクが未選択の可能性があります）", ""
+
+                ok, msg, payload, _png_path = forge_export.export_cutout(store_img, mask, crop=True)
+                if not ok:
+                    _log(msg)
+                return msg, payload
+
             export_outputs = [export_status, export_payload]
             if _INPAINT_BASE is not None and _INPAINT_MASK is not None:
                 export_outputs.extend([_INPAINT_BASE, _INPAINT_MASK])
@@ -993,6 +1016,35 @@ class Sam3AnimeMaskScript(scripts.Script):
                 fn=_dl_mask,
                 inputs=[combined_img],
                 outputs=[download_btn],
+            )
+
+            cutout_event = cutout_btn.click(
+                fn=_prepare_cutout,
+                inputs=[store_image, combined_img, store_masks, active_masks],
+                outputs=[export_status, cutout_payload],
+            )
+            cutout_event.then(
+                fn=None,
+                _js=(
+                    f"(payload) => {{"
+                    f" try {{"
+                    f"  let p = payload;"
+                    f"  if (!p) {{"
+                    f"    const root = (typeof gradioApp === 'function') ? gradioApp() : document;"
+                    f"    const el = root.querySelector("
+                    f"      '#sam3_anime_cutout_payload_{tab} textarea, textarea#sam3_anime_cutout_payload_{tab}'"
+                    f"    );"
+                    f"    p = el ? el.value : '';"
+                    f"  }}"
+                    f"  if (window.sam3AnimeDownloadCutout && p) {{"
+                    f"    window.sam3AnimeDownloadCutout(p);"
+                    f"  }}"
+                    f" }} catch (e) {{}}"
+                    f" return [];"
+                    f"}}"
+                ),
+                inputs=[cutout_payload],
+                outputs=[],
             )
 
         # Button-only script: do not return processing args
