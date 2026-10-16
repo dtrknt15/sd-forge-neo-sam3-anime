@@ -71,16 +71,16 @@ Links:
 1. Put an image on img2img (or drop it into the extension Image box). **img2img から取得** fills 参照画像 so you can verify the source before Generate. If empty, only the img2img init / Inpaint upload image is used; ControlNet and other extension images are ignored
 2. Check presets (default: `face`). Optional free text: `cat ears, ribbon, sword` (comma-split into separate masks; `extra` checkbox not required)
 3. **Generate masks** — SAM3 is auto-loaded if not already loaded
-4. Toggle **使用するマスク** to include/exclude individual concept masks (updates preview/export without re-running SAM3). Quick buttons: 全ON / 全OFF / 顔まわり / 人物 / 反転
-   - Overlay is color-coded per concept. Click a gallery item for that concept alone; **色分け表示に戻す** restores the multi-color view
-5. Adjust `dilate / erode`, `feather`, `invert mask` as needed
+4. Toggle **使用するマスク** to include/exclude individual concept masks, or **除外するマスク（引き算）** to subtract overlapping concepts (updates preview/export without re-running SAM3). Quick buttons: 全ON / 全OFF / 顔まわり / 人物 / 反転
+   - Overlay is color-coded per concept (including distinct colors for multiple free-text concepts). Click a gallery item for that concept alone; **色分け表示に戻す** restores the multi-color view
+5. Adjust `score threshold`, `dilate / erode`, `feather`, `invert mask` as needed (all update live while dragging without re-running SAM3)
    - **feather (px)** blurs the mask edge into a 0–255 gradient. WebUI's inpaint interpolates mask values, so a soft edge removes visible paint seams that a hard binary edge causes. 4–8 px is a good start; interior and background stay fully 255/0, only the boundary is graded. Drag the slider to preview live
 6. **Export to inpaint** — always targets **img2img → Inpaint upload**
    - Mask convention: **white = edit region** (dual-encoded in RGB and alpha)
    - If the region looks inverted in the Inpaint upload preview, also check `inpainting_mask_invert` (Settings)
    - On **img2img**: Export is primary
    - On **txt2img**: Download mask PNG is primary; Export switches to img2img Inpaint upload
-   - **Download cutout PNG（透過切り抜き）**: downloads the selected region as a transparent RGBA PNG, tightly cropped to the bounding box
+   - **Download cutout PNG（透過切り抜き）**: downloads the selected region as a transparent RGBA PNG (with **切り抜き時に余白をトリミング** toggle to crop tightly or keep original dimensions)
 7. Optional: **Unload SAM3** / **Free VRAM**
 
 **Cancel** (next to Unload / Free VRAM): during a long generate, press Cancel to stop after the current prompt. Remaining prompts are listed as `Cancelled: …` in the status line and masks generated so far are kept — you can preview/export the partial result. The currently running prompt (1–few seconds) cannot be aborted mid-flight; pressing Cancel when nothing is running just reports that.
@@ -207,16 +207,16 @@ Hugging Face 上の SAM3 重みは **Gated** です。申請して承認され�
 1. img2img に画像を置く。**img2img から取得** で参照画像を先に確認できます（空のまま Generate でも img2img init / Inpaint upload 画像のみ自動参照。ControlNet など他拡張の画像は使いません）
 2. プリセットにチェック（既定: `face`）。自由入力例: `cat ears, ribbon, sword`（カンマで分割・`extra` チェック不要）
 3. **Generate masks**（未ロード時は自動ロード）
-4. **使用するマスク** で個別ON/OFF（プレビュー/Export へ即時反映、再推論なし）。クイックボタン: 全ON / 全OFF / 顔まわり / 人物 / 反転
-   - オーバーレイはコンセプト別の色分け表示。個別マスクのクリックでその色の単体表示、「色分け表示に戻す」で全体へ戻れます
-5. `dilate / erode`、`feather`、`invert mask` を調整
+4. **使用するマスク** で個別ON/OFF、**除外するマスク（引き算）** で重なり領域のくり抜き（プレビュー/Export へ即時反映、再推論なし）。クイックボタン: 全ON / 全OFF / 顔まわり / 人物 / 反転
+   - オーバーレイはコンセプト別の色分け表示（自由入力を複数指定したときも別色で表示）。個別マスクのクリックでその色の単体表示、「色分け表示に戻す」で全体へ戻れます
+5. `score threshold`、`dilate / erode`、`feather`、`invert mask` を調整（すべて生成後にドラッグでリアルタイム更新・再推論なし）
    - **feather (px)** はマスクの輪郭を 0〜255 の勾配にぼかします。WebUI の inpaint はマスク値を補間するため、二値マスクの硬い境界による塗り跡・段差が目立ちにくくなります。まずは 4〜8px 推奨。内部と背景は 255/0 のまま、境界帯だけが滑らかになります。ドラッグ中もプレビュー更新
 6. **Export to inpaint** — 送信先は常に **img2img → Inpaint upload**
    - マスク規約: **白 = 編集領域**（不透明 RGBA。プレビューは黒/白で表示されます）
    - Inpaint upload のプレビューで白黒が逆に見える場合は設定の `inpainting_mask_invert` も確認
    - **img2img** タブ: Export が主ボタン
    - **txt2img** タブ: マスク PNG Download が主。Export を押すと img2img Inpaint upload へ自動切替
-   - **Download cutout PNG（透過切り抜き）**: 選択中の要素の周囲ギリギリでトリミングした透過 PNG をダウンロード
+   - **Download cutout PNG（透過切り抜き）**: 選択中の要素を透過 PNG でダウンロード（「切り抜き時に余白をトリミング」で余白カットと元サイズ維持を切替可能）
 7. 任意で **Unload SAM3** / **Free VRAM**
 
 **Cancel**（Unload / Free VRAM の隣）: 生成中に押すと現在のプロンプト完了後に停止します。未実行のプロンプトはステータスに `Cancelled: …` と表示され、**生成済みのマスクはそのまま保持**されるため、途中結果のプレビュー/Export が可能です。実行中の 1 プロンプト自体（1〜数秒）は中断できません。生成していないときに押すとその旨が表示されるだけです。

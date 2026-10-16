@@ -58,6 +58,36 @@ def save_combined_mask(mask: Image.Image, directory: str | Path | None = None) -
     return path
 
 
+def export_combined_mask(
+    mask: Image.Image,
+    *,
+    save_dir: str | Path | None = None,
+) -> tuple[bool, str, str, Path | None]:
+    """Save combined mask PNG + build download payload JSON.
+
+    Returns (ok, status_message, payload_json, png_path).
+    """
+    try:
+        m = to_inpaint_mask(mask)
+        directory = Path(save_dir) if save_dir else Path(tempfile.gettempdir()) / "sam3_anime_masks"
+        directory.mkdir(parents=True, exist_ok=True)
+        png_path = directory / _timestamped_mask_name()
+        m.save(png_path, format="PNG")
+    except Exception as e:
+        return False, f"Download failed: could not save mask PNG ({e})", "", None
+
+    try:
+        b64 = _pil_to_b64_png(m)
+    except Exception as e:
+        return False, f"Download failed: {e}. マスク PNG は保存済み: `{png_path}`", "", png_path
+
+    import json
+
+    payload = json.dumps({"image": b64, "filename": png_path.name})
+    msg = f"マスク PNG を保存しました: `{png_path}` ({m.width}×{m.height})"
+    return True, msg, payload, png_path
+
+
 def save_cutout(
     image: Image.Image,
     mask: Image.Image,

@@ -167,7 +167,7 @@ def build_color_legend_html(
         return ""
     chips: list[str] = []
     for cid in concept_ids:
-        r, g, b = constants.OVERLAY_PALETTE.get(cid, constants.OVERLAY_PALETTE["extra"])
+        r, g, b = constants.color_for_id(cid)
         hex_color = f"#{r:02x}{g:02x}{b:02x}"
         label = constants.label_for_id(cid, labels)
         chips.append(

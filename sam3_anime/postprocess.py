@@ -7,7 +7,7 @@ from collections.abc import Iterable
 import numpy as np
 from PIL import Image
 
-from .constants import OVERLAY_PALETTE
+from .constants import color_for_id
 
 
 def _to_gray(mask: Image.Image | np.ndarray) -> np.ndarray:
@@ -116,6 +116,22 @@ def combine_masks(masks: Iterable[Image.Image]) -> Image.Image:
     return Image.fromarray(acc, mode="L")
 
 
+def subtract_masks(base: Image.Image, subtract: Iterable[Image.Image]) -> Image.Image:
+    """Subtract one or more masks from `base` (clamped 0..255 for soft/binary masks)."""
+    sub_list = list(subtract)
+    if not sub_list:
+        return Image.fromarray(_to_gray(base), mode="L")
+    base_arr = _to_gray(base).astype(np.int16)
+    sub_arr = _to_gray(combine_masks(sub_list)).astype(np.int16)
+    if sub_arr.shape != base_arr.shape:
+        sub_img = Image.fromarray(sub_arr.astype(np.uint8), mode="L").resize(
+            (base_arr.shape[1], base_arr.shape[0]), Image.NEAREST
+        )
+        sub_arr = np.asarray(sub_img, dtype=np.int16)
+    diff = np.clip(base_arr - sub_arr, 0, 255).astype(np.uint8)
+    return Image.fromarray(diff, mode="L")
+
+
 def to_inpaint_mask(mask: Image.Image) -> Image.Image:
     """White = inpaint region (WebUI convention). Return L or RGB."""
     return mask.convert("L")
@@ -123,7 +139,7 @@ def to_inpaint_mask(mask: Image.Image) -> Image.Image:
 
 def make_overlay(image: Image.Image, mask: Image.Image, concept_id: str = "extra", alpha: float = 0.45) -> Image.Image:
     base = image.convert("RGBA")
-    color = OVERLAY_PALETTE.get(concept_id, OVERLAY_PALETTE["extra"])
+    color = color_for_id(concept_id)
     arr = _to_np(mask)
     h, w = arr.shape
     overlay = np.zeros((h, w, 4), dtype=np.uint8)
@@ -151,7 +167,7 @@ def make_multi_overlay(
     base = np.asarray(image.convert("RGB"), dtype=np.float32)
     out = base.copy()
     for cid, mask in masks.items():
-        color = np.array(OVERLAY_PALETTE.get(cid, OVERLAY_PALETTE["extra"]), dtype=np.float32)
+        color = np.array(color_for_id(cid), dtype=np.float32)
         m = _to_gray(mask)
         if m.shape != out.shape[:2]:
             m = np.array(
@@ -169,17 +185,23 @@ def process_pipeline(
     dilate: int = 0,
     feather: int = 0,
     invert: bool = False,
+    subtract: dict[str, Image.Image] | None = None,
 ) -> tuple[dict[str, Image.Image], Image.Image | None]:
-    """Apply morphology → feather → invert. Fixed order.
+    """Apply morphology → feather → (optional subtract) → invert. Fixed order.
 
     Feathering runs before invert so an inverted (background) mask keeps the
     same soft edge as the foreground one — both are graded around the same
     boundary. Returns (processed_per_concept, combined_or_None).
     """
+    sub_list = [feather_mask(apply_dilate_erode(m, dilate), feather) for m in (subtract or {}).values()]
     out: dict[str, Image.Image] = {}
     for cid, mask in per_concept.items():
+        if subtract and cid in subtract:
+            continue
         m = apply_dilate_erode(mask, dilate)
         m = feather_mask(m, feather)
+        if sub_list:
+            m = subtract_masks(m, sub_list)
         if invert:
             m = invert_mask(m)
         out[cid] = m

@@ -218,7 +218,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                     step=0.01,
                     info=(
                         "検出スコアがこの値以上の領域のみマスク化（低い=多く拾う/高い=厳選）。"
-                        "出力にスコアがない場合は効果なし。マスクの二値化は固定（0.5）です。"
+                        "生成後もドラッグで即時反映（再推論なし）。マスクの二値化は固定（0.5）です。"
                     ),
                     scale=2,
                 )
@@ -267,6 +267,12 @@ class Sam3AnimeMaskScript(scripts.Script):
                 quick_face_btn = gr.Button("顔まわり", size="sm", scale=1)
                 quick_person_btn = gr.Button("人物", size="sm", scale=1)
                 quick_invert_btn = gr.Button("反転", size="sm", scale=1)
+            subtract_masks = gr.CheckboxGroup(
+                label="除外するマスク（引き算・重なり部分をくり抜く）",
+                choices=[],
+                value=[],
+                elem_id=f"sam3_anime_subtract_{tab}",
+            )
             legend_md = gr.Markdown("", elem_id=f"sam3_anime_legend_{tab}")
             with gr.Row():
                 combined_img = gr.Image(
@@ -292,6 +298,7 @@ class Sam3AnimeMaskScript(scripts.Script):
             # Hidden store: processed image for export / re-postprocess
             store_image = gr.State(None)
             store_masks = gr.State({})  # {id: PIL L} after last generate (pre postprocess)
+            store_candidates = gr.State({})  # {id: {"masks": [...], "scores": ...}} for live threshold
             store_labels = gr.State({})  # {concept_id: display label} after last generate
             # JS → Python transfer for Forge Canvas image (base64 data URL)
             canvas_b64 = gr.Textbox(value="", visible=False, elem_id=f"sam3_anime_canvas_b64_{tab}")
@@ -318,18 +325,20 @@ class Sam3AnimeMaskScript(scripts.Script):
             with gr.Row():
                 if is_img2img:
                     export_btn = gr.Button(export_label, elem_id=f"sam3_anime_export_{tab}", **export_btn_kwargs)
-                    download_btn = gr.DownloadButton(
-                        download_label, elem_id=f"sam3_anime_dl_{tab}", **download_btn_kwargs
-                    )
+                    download_btn = gr.Button(download_label, elem_id=f"sam3_anime_dl_{tab}", **download_btn_kwargs)
                     cutout_btn = gr.Button(cutout_label, elem_id=f"sam3_anime_cutout_{tab}", variant="secondary")
                 else:
-                    download_btn = gr.DownloadButton(
-                        download_label, elem_id=f"sam3_anime_dl_{tab}", **download_btn_kwargs
-                    )
+                    download_btn = gr.Button(download_label, elem_id=f"sam3_anime_dl_{tab}", **download_btn_kwargs)
                     cutout_btn = gr.Button(cutout_label, elem_id=f"sam3_anime_cutout_{tab}", variant="secondary")
                     export_btn = gr.Button(export_label, elem_id=f"sam3_anime_export_{tab}", **export_btn_kwargs)
+                crop_cutout = gr.Checkbox(
+                    label="切り抜き時に余白をトリミング",
+                    value=True,
+                    elem_id=f"sam3_anime_crop_{tab}",
+                )
             export_status = gr.Markdown("", elem_id=f"sam3_anime_export_status_{tab}")
             export_payload = gr.Textbox(visible=False, elem_id=f"sam3_anime_export_payload_{tab}")
+            mask_dl_payload = gr.Textbox(visible=False, elem_id=f"sam3_anime_mask_dl_payload_{tab}")
             cutout_payload = gr.Textbox(visible=False, elem_id=f"sam3_anime_cutout_payload_{tab}")
 
             # Button lockout while SAM3 is busy. Generate's first .click
@@ -518,6 +527,8 @@ class Sam3AnimeMaskScript(scripts.Script):
                         no_change,
                         no_change,
                         no_change,
+                        no_change,
+                        no_change,
                         status_message,
                         *buttons_back,
                     )
@@ -526,6 +537,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                 combined = None
                 overlay = None
                 masks_state: dict = {}
+                candidates_state: dict = {}
                 used_image = None
                 notes: list[str] = []
                 labels_state: dict = {}
@@ -561,7 +573,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                     notes.append(f"auto-loaded: {Path(ckpt_name).name}")
 
                 try:
-                    raw, skipped, cancelled = infer.generate_masks(
+                    raw, candidates_state, skipped, cancelled = infer.generate_masks_with_candidates(
                         used_image,
                         prompts,
                         max_side=int(mside),
@@ -622,8 +634,10 @@ class Sam3AnimeMaskScript(scripts.Script):
                     used_image if not explicit_image else no_change,
                     used_image,
                     masks_state,
+                    candidates_state,
                     labels_state,
                     gr.update(choices=active_choices, value=active_value),
+                    gr.update(choices=active_choices, value=[]),
                     ui_state.build_color_legend_html(list(processed), labels),
                     status_msg,
                     *buttons_back,
@@ -718,8 +732,10 @@ class Sam3AnimeMaskScript(scripts.Script):
                     input_image,
                     store_image,
                     store_masks,
+                    store_candidates,
                     store_labels,
                     active_masks,
+                    subtract_masks,
                     legend_md,
                     status,
                     generate_btn,
@@ -730,8 +746,8 @@ class Sam3AnimeMaskScript(scripts.Script):
                 _js=_js_with_canvas,
             )
 
-            # Re-run postprocess when sliders / active mask selection change
-            def _multi_overlay_update(store_img, store_m, active, labels, dil_amt, feather_amt, do_invert):
+            # Re-run postprocess when sliders / active / subtract mask selection change
+            def _multi_overlay_update(store_img, store_m, active, subtract, labels, dil_amt, feather_amt, do_invert):
                 from sam3_anime import postprocess, ui_state
 
                 selected = ui_state.gallery_visible_ids(store_m, active)
@@ -741,11 +757,13 @@ class Sam3AnimeMaskScript(scripts.Script):
                         ui_state.build_color_legend_html([]),
                     )
                 subset = {cid: store_m[cid] for cid in selected}
+                sub_dict = {cid: store_m[cid] for cid in (subtract or []) if store_m and cid in store_m}
                 processed, _combined = postprocess.process_pipeline(
                     subset,
                     dilate=int(dil_amt),
                     feather=int(feather_amt),
                     invert=bool(do_invert),
+                    subtract=sub_dict or None,
                 )
                 overlay = postprocess.make_multi_overlay(store_img, processed, alpha=0.45)
                 return (
@@ -753,7 +771,7 @@ class Sam3AnimeMaskScript(scripts.Script):
                     ui_state.build_color_legend_html(list(processed), labels),
                 )
 
-            def _repost(store_img, store_m, active, dil_amt, feather_amt, do_invert, labels):
+            def _repost(store_img, store_m, active, subtract, dil_amt, feather_amt, do_invert, labels):
                 from sam3_anime import postprocess, ui_state
 
                 if not store_m:
@@ -763,31 +781,59 @@ class Sam3AnimeMaskScript(scripts.Script):
                 if not selected:
                     return [], None, gr.update(value=None, label=ui_state.overlay_label("multi")), ""
                 subset = {cid: store_m[cid] for cid in selected}
+                sub_dict = {cid: store_m[cid] for cid in (subtract or []) if cid in store_m}
                 processed, combined = postprocess.process_pipeline(
                     subset,
                     dilate=int(dil_amt),
                     feather=int(feather_amt),
                     invert=bool(do_invert),
+                    subtract=sub_dict or None,
                 )
                 gallery_out = [
                     (m, f"{constants.label_for_id(cid, labels)} ({cid})") for cid, m in processed.items()
                 ]
                 overlay_update, legend = _multi_overlay_update(
-                    store_img, store_m, active, labels, dil_amt, feather_amt, do_invert
+                    store_img, store_m, active, subtract, labels, dil_amt, feather_amt, do_invert
                 )
                 return gallery_out, combined, overlay_update, legend
 
             def _repost_inputs():
-                return [store_image, store_masks, active_masks, dilate, feather, invert, store_labels]
+                return [store_image, store_masks, active_masks, subtract_masks, dilate, feather, invert, store_labels]
+
+            def _on_threshold_input(
+                thr,
+                store_img,
+                store_cand,
+                store_m,
+                active,
+                subtract,
+                dil_amt,
+                feather_amt,
+                do_invert,
+                labels,
+            ):
+                from sam3_anime import infer
+
+                no_change = gr.update()
+                if not store_cand:
+                    return no_change, no_change, no_change, no_change, no_change
+                orig_size = store_img.size if store_img is not None else None
+                updated_masks, _notes = infer.filter_candidates(store_cand, float(thr), orig_size=orig_size)
+                if not updated_masks:
+                    return no_change, no_change, no_change, no_change, no_change
+                gallery_out, combined, overlay_update, legend = _repost(
+                    store_img, updated_masks, active, subtract, dil_amt, feather_amt, do_invert, labels
+                )
+                return updated_masks, gallery_out, combined, overlay_update, legend
 
             def _make_quick_select(mode: str):
-                def _fn(store_img, store_m, current, dil_amt, feather_amt, do_invert, labels):
+                def _fn(store_img, store_m, current, subtract, dil_amt, feather_amt, do_invert, labels):
                     from sam3_anime import ui_state
 
                     available = list(store_m.keys()) if store_m else []
                     selected = ui_state.quick_select_active(mode, available, current or [])
                     gallery_out, combined, overlay_update, legend = _repost(
-                        store_img, store_m, selected, dil_amt, feather_amt, do_invert, labels
+                        store_img, store_m, selected, subtract, dil_amt, feather_amt, do_invert, labels
                     )
                     return gr.update(value=selected), gallery_out, combined, overlay_update, legend
 
@@ -808,6 +854,23 @@ class Sam3AnimeMaskScript(scripts.Script):
                 )
 
             # Live update while dragging (not only on release)
+            threshold.input(
+                fn=_on_threshold_input,
+                inputs=[
+                    threshold,
+                    store_image,
+                    store_candidates,
+                    store_masks,
+                    active_masks,
+                    subtract_masks,
+                    dilate,
+                    feather,
+                    invert,
+                    store_labels,
+                ],
+                outputs=[store_masks, gallery, combined_img, overlay_img, legend_md],
+                show_progress="hidden",
+            )
             dilate.input(
                 fn=_repost,
                 inputs=_repost_inputs(),
@@ -835,12 +898,19 @@ class Sam3AnimeMaskScript(scripts.Script):
                 outputs=[gallery, combined_img, overlay_img, legend_md],
                 show_progress="hidden",
             )
+            subtract_masks.input(
+                fn=_repost,
+                inputs=_repost_inputs(),
+                outputs=[gallery, combined_img, overlay_img, legend_md],
+                show_progress="hidden",
+            )
 
             def _on_gallery_select(
                 evt: gr.SelectData,
                 store_img,
                 store_m,
                 active,
+                subtract,
                 labels,
                 dil_amt,
                 feather_amt,
@@ -849,15 +919,21 @@ class Sam3AnimeMaskScript(scripts.Script):
                 from sam3_anime import postprocess, ui_state
 
                 no_change = gr.update()
-                cid = ui_state.gallery_index_at(evt.index, store_m, active, columns=5)
+                sub_set = set(subtract or [])
+                visible_active = [c for c in (active or []) if c not in sub_set]
+                cid = ui_state.gallery_index_at(evt.index, store_m, visible_active, columns=5)
                 if cid is None or store_img is None or not store_m or cid not in store_m:
                     return no_change, no_change
+                sub_dict = {c: store_m[c] for c in sub_set if c in store_m}
                 processed, _combined = postprocess.process_pipeline(
                     {cid: store_m[cid]},
                     dilate=int(dil_amt),
                     feather=int(feather_amt),
                     invert=bool(do_invert),
+                    subtract=sub_dict or None,
                 )
+                if cid not in processed:
+                    return no_change, no_change
                 # Slightly stronger alpha so a single concept reads clearly.
                 overlay = postprocess.make_overlay(store_img, processed[cid], cid, alpha=0.55)
                 return (
@@ -865,14 +941,14 @@ class Sam3AnimeMaskScript(scripts.Script):
                     ui_state.build_color_legend_html([cid], labels),
                 )
 
-            def _show_multi(store_img, store_m, active, labels, dil_amt, feather_amt, do_invert):
+            def _show_multi(store_img, store_m, active, subtract, labels, dil_amt, feather_amt, do_invert):
                 return _multi_overlay_update(
-                    store_img, store_m, active, labels, dil_amt, feather_amt, do_invert
+                    store_img, store_m, active, subtract, labels, dil_amt, feather_amt, do_invert
                 )
 
             gallery.select(
                 fn=_on_gallery_select,
-                inputs=[store_image, store_masks, active_masks, store_labels, dilate, feather, invert],
+                inputs=[store_image, store_masks, active_masks, subtract_masks, store_labels, dilate, feather, invert],
                 outputs=[overlay_img, legend_md],
                 show_progress="hidden",
             )
@@ -899,8 +975,26 @@ class Sam3AnimeMaskScript(scripts.Script):
                 show_progress="hidden",
             )
 
-            def _prepare_export(store_img, combined, store_m, active):
-                from sam3_anime import forge_export, postprocess, ui_state
+            def _resolve_active_combined(combined, store_m, active, subtract):
+                from sam3_anime import postprocess
+
+                if combined is not None:
+                    return combined
+                if store_m:
+                    sub_set = set(subtract or [])
+                    selected = [cid for cid in (active or []) if cid in store_m and cid not in sub_set]
+                    if not selected:
+                        selected = [cid for cid in store_m if cid not in sub_set]
+                    if selected:
+                        m = postprocess.combine_masks([store_m[cid] for cid in selected])
+                        sub_list = [store_m[cid] for cid in sub_set if cid in store_m]
+                        if sub_list:
+                            m = postprocess.subtract_masks(m, sub_list)
+                        return m
+                return None
+
+            def _prepare_export(store_img, combined, store_m, active, subtract):
+                from sam3_anime import forge_export, ui_state
 
                 has_canvas = _INPAINT_BASE is not None and _INPAINT_MASK is not None
 
@@ -908,12 +1002,8 @@ class Sam3AnimeMaskScript(scripts.Script):
                     msg = "Export failed: No image"
                     return (msg, "", gr.update(), gr.update()) if has_canvas else (msg, "")
 
-                # Prefer the displayed combined mask (already filtered by active + dilate/invert)
-                mask = combined
-                if mask is None and store_m:
-                    selected = [cid for cid in (active or []) if cid in store_m] or list(store_m.keys())
-                    if selected:
-                        mask = postprocess.combine_masks([store_m[cid] for cid in selected])
+                # Prefer the displayed combined mask (already filtered by active/subtract + dilate/invert)
+                mask = _resolve_active_combined(combined, store_m, active, subtract)
                 if mask is None:
                     msg = "Export failed: No mask（使用するマスクが未選択の可能性があります）"
                     return (msg, "", gr.update(), gr.update()) if has_canvas else (msg, "")
@@ -939,32 +1029,28 @@ class Sam3AnimeMaskScript(scripts.Script):
                 note = ui_state.build_export_note(str(png_path), image_set=False)
                 return note, payload
 
-            def _dl_mask(combined):
+            def _prepare_mask_dl(combined, store_m, active, subtract):
                 from sam3_anime import forge_export
 
-                if combined is None:
-                    return None
-                try:
-                    return str(forge_export.save_combined_mask(combined))
-                except Exception as e:
-                    _log(f"download save failed: {e}")
-                    return None
+                mask = _resolve_active_combined(combined, store_m, active, subtract)
+                if mask is None:
+                    return "Download failed: No mask（使用するマスクが未選択の可能性があります）", ""
+                ok, msg, payload, _png_path = forge_export.export_combined_mask(mask)
+                if not ok:
+                    _log(msg)
+                return msg, payload
 
-            def _prepare_cutout(store_img, combined, store_m, active):
-                from sam3_anime import forge_export, postprocess
+            def _prepare_cutout(store_img, combined, store_m, active, subtract, do_crop):
+                from sam3_anime import forge_export
 
                 if store_img is None:
                     return "Cutout failed: No image", ""
 
-                mask = combined
-                if mask is None and store_m:
-                    selected = [cid for cid in (active or []) if cid in store_m] or list(store_m.keys())
-                    if selected:
-                        mask = postprocess.combine_masks([store_m[cid] for cid in selected])
+                mask = _resolve_active_combined(combined, store_m, active, subtract)
                 if mask is None:
                     return "Cutout failed: No mask（使用するマスクが未選択の可能性があります）", ""
 
-                ok, msg, payload, _png_path = forge_export.export_cutout(store_img, mask, crop=True)
+                ok, msg, payload, _png_path = forge_export.export_cutout(store_img, mask, crop=bool(do_crop))
                 if not ok:
                     _log(msg)
                 return msg, payload
@@ -976,7 +1062,7 @@ class Sam3AnimeMaskScript(scripts.Script):
             # Python first: write image+mask into inpaint components / PNG
             export_event = export_btn.click(
                 fn=_prepare_export,
-                inputs=[store_image, combined_img, store_masks, active_masks],
+                inputs=[store_image, combined_img, store_masks, active_masks, subtract_masks],
                 outputs=export_outputs,
             )
 
@@ -1012,15 +1098,38 @@ class Sam3AnimeMaskScript(scripts.Script):
                     outputs=[],
                 )
 
-            download_btn.click(
-                fn=_dl_mask,
-                inputs=[combined_img],
-                outputs=[download_btn],
+            mask_dl_event = download_btn.click(
+                fn=_prepare_mask_dl,
+                inputs=[combined_img, store_masks, active_masks, subtract_masks],
+                outputs=[export_status, mask_dl_payload],
+            )
+            mask_dl_event.then(
+                fn=None,
+                _js=(
+                    f"(payload) => {{"
+                    f" try {{"
+                    f"  let p = payload;"
+                    f"  if (!p) {{"
+                    f"    const root = (typeof gradioApp === 'function') ? gradioApp() : document;"
+                    f"    const el = root.querySelector("
+                    f"      '#sam3_anime_mask_dl_payload_{tab} textarea, textarea#sam3_anime_mask_dl_payload_{tab}'"
+                    f"    );"
+                    f"    p = el ? el.value : '';"
+                    f"  }}"
+                    f"  if (window.sam3AnimeDownloadCutout && p) {{"
+                    f"    window.sam3AnimeDownloadCutout(p);"
+                    f"  }}"
+                    f" }} catch (e) {{}}"
+                    f" return [];"
+                    f"}}"
+                ),
+                inputs=[mask_dl_payload],
+                outputs=[],
             )
 
             cutout_event = cutout_btn.click(
                 fn=_prepare_cutout,
-                inputs=[store_image, combined_img, store_masks, active_masks],
+                inputs=[store_image, combined_img, store_masks, active_masks, subtract_masks, crop_cutout],
                 outputs=[export_status, cutout_payload],
             )
             cutout_event.then(

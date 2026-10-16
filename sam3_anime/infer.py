@@ -144,19 +144,51 @@ def _state_to_mask(state: Any, threshold: float) -> tuple[Image.Image | None, st
     return Image.fromarray(acc, mode="L"), note
 
 
+def _extract_candidates(state: Any) -> dict[str, Any] | None:
+    """Extract CPU-only candidate masks + optional scores for live threshold re-filtering."""
+    masks = _masks_from_output(state)
+    if not masks:
+        return None
+    cand: dict[str, Any] = {"masks": masks}
+    scores = _scores_from_output(state)
+    if scores is not None:
+        cand["scores"] = scores
+    return cand
+
+
+def filter_candidates(
+    candidates: dict[str, dict[str, Any]],
+    threshold: float,
+    orig_size: tuple[int, int] | None = None,
+) -> tuple[dict[str, Image.Image], list[str]]:
+    """Re-filter cached candidate masks at `threshold` without re-running SAM3."""
+    result: dict[str, Image.Image] = {}
+    notes: list[str] = []
+    for cid, cand in (candidates or {}).items():
+        mask, note = _state_to_mask(cand, threshold)
+        if note and note not in notes:
+            notes.append(note)
+        if mask is not None:
+            if orig_size is not None and mask.size != orig_size:
+                mask = mask.resize(orig_size, Image.NEAREST)
+            result[cid] = mask
+    return result, notes
+
+
 def _run_concepts(
     processor: Any,
     image: Image.Image,
     prompts: list[tuple[str, str]],
     threshold: float,
-) -> tuple[dict[str, Image.Image], list[str], list[str], bool]:
+) -> tuple[dict[str, Image.Image], dict[str, dict[str, Any]], list[str], list[str], bool]:
     """set_image once, then sequential set_text_prompt with kept state.
 
-    Returns (masks, skipped_prompts, threshold_notes, cancelled).
+    Returns (masks, candidates, skipped_prompts, threshold_notes, cancelled).
     threshold_notes are deduplicated messages telling the user when the
     score threshold filter had no effect for a concept.
     """
     result: dict[str, Image.Image] = {}
+    candidates: dict[str, dict[str, Any]] = {}
     skipped: list[str] = []
     threshold_notes: list[str] = []
     cancelled = False
@@ -173,10 +205,12 @@ def _run_concepts(
             cancelled = True
             continue
         note: str | None = None
+        cand: dict[str, Any] | None = None
         try:
             with _autocast_ctx():
                 # Official: set_text_prompt(prompt=..., state=...)
                 state = processor.set_text_prompt(prompt=prompt, state=state)
+            cand = _extract_candidates(state)
             mask, note = _state_to_mask(state, threshold)
         except Exception:
             # Fallback: full re-run (image + text) if state reuse fails
@@ -184,6 +218,7 @@ def _run_concepts(
                 with _autocast_ctx():
                     state2 = processor.set_image(image)
                     state2 = processor.set_text_prompt(prompt=prompt, state=state2)
+                cand = _extract_candidates(state2)
                 mask, note = _state_to_mask(state2, threshold)
             except Exception as e2:
                 last = str(e2).strip().splitlines()[-1] if str(e2).strip() else repr(e2)
@@ -201,8 +236,10 @@ def _run_concepts(
             skipped.append(f"Prompt produced no mask: {prompt}")
             continue
         result[cid] = mask
+        if cand is not None:
+            candidates[cid] = cand
 
-    return result, skipped, threshold_notes, cancelled
+    return result, candidates, skipped, threshold_notes, cancelled
 
 
 def generate_masks(
@@ -219,6 +256,23 @@ def generate_masks(
     before the cancel request; notes includes one Cancelled: entry per
     remaining prompt.
     """
+    result, _candidates, notes, cancelled = generate_masks_with_candidates(
+        image,
+        prompts,
+        max_side=max_side,
+        threshold=threshold,
+    )
+    return result, notes, cancelled
+
+
+def generate_masks_with_candidates(
+    image: Image.Image,
+    prompts: list[tuple[str, str]],
+    *,
+    max_side: int = 1024,
+    threshold: float = 0.5,
+) -> tuple[dict[str, Image.Image], dict[str, dict[str, Any]], list[str], bool]:
+    """Return ({id: mask_L at original size}, candidates, notes, cancelled)."""
     image = image.convert("RGB")
 
     # Block Load/Unload/Free VRAM (and a concurrent second generate) while
@@ -233,7 +287,7 @@ def _generate_locked(
     *,
     max_side: int,
     threshold: float,
-) -> tuple[dict[str, Image.Image], list[str], bool]:
+) -> tuple[dict[str, Image.Image], dict[str, dict[str, Any]], list[str], bool]:
     result: dict[str, Image.Image] = {}
 
     if not model_manager.is_loaded():
@@ -245,11 +299,11 @@ def _generate_locked(
 
     orig_size = image.size
     fitted = _fit_image(image, int(max_side))
-    raw, skipped, threshold_notes, cancelled = _run_concepts(processor, fitted, prompts, threshold)
+    raw, candidates, skipped, threshold_notes, cancelled = _run_concepts(processor, fitted, prompts, threshold)
 
     for cid, mask in raw.items():
         if mask.size != orig_size:
             mask = mask.resize(orig_size, Image.NEAREST)
         result[cid] = mask
 
-    return result, skipped + threshold_notes, cancelled
+    return result, candidates, skipped + threshold_notes, cancelled

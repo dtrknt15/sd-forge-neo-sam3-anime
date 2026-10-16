@@ -218,3 +218,22 @@ def test_make_cutout_empty_mask_does_not_crash():
     assert cut.mode == "RGBA"
     assert cut.size == (8, 8)
     assert (np.array(cut)[..., 3] == 0).all()
+
+
+def test_subtract_masks_and_pipeline_subtract():
+    clothes = make_mask((8, 8), [(2, 2), (2, 3), (3, 3)])
+    hair = make_mask((8, 8), [(2, 3), (4, 4)])
+    diff = np.array(postprocess.subtract_masks(clothes, [hair]))
+    assert diff[2, 2] == 255 and diff[3, 3] == 255
+    assert diff[2, 3] == 0 and diff[4, 4] == 0
+
+    processed, combined = postprocess.process_pipeline(
+        {"clothes": clothes, "hair": hair},
+        dilate=0,
+        feather=0,
+        invert=False,
+        subtract={"hair": hair},
+    )
+    assert list(processed) == ["clothes"]
+    comb = np.array(combined)
+    assert comb[2, 2] == 255 and comb[2, 3] == 0

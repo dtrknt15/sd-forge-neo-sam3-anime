@@ -131,3 +131,9 @@ def test_save_and_export_cutout(tmp_path):
     decoded = Image.open(io.BytesIO(base64.b64decode(data["image"])))
     assert decoded.mode == "RGBA"
     assert decoded.size == (2, 2)
+
+    ok_m, msg_m, payload_m, mask_path = forge_export.export_combined_mask(mask, save_dir=tmp_path)
+    assert ok_m and mask_path is not None and mask_path.is_file()
+    assert "10×10" in msg_m
+    data_m = json.loads(payload_m)
+    assert data_m["filename"] == mask_path.name

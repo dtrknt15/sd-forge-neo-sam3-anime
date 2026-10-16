@@ -77,3 +77,15 @@ def test_fit_image_downscales_only_large():
     assert fitted.size == (1024, 512)
     same = infer._fit_image(Image.new("RGB", (512, 256)), 1024)
     assert same.size == (512, 256)
+
+
+def test_filter_candidates_live_threshold():
+    arr = np.stack(quadrant_masks()).astype(np.float32)
+    scores = np.array([0.9, 0.2, 0.7, 0.1], dtype=np.float32)
+    cand = infer._extract_candidates({"masks": arr, "scores": scores})
+    assert cand is not None
+    high_masks, notes = infer.filter_candidates({"face": cand}, threshold=0.8, orig_size=(64, 64))
+    assert not notes
+    assert high_masks["face"].size == (64, 64)
+    low_masks, _ = infer.filter_candidates({"face": cand}, threshold=0.6, orig_size=(64, 64))
+    assert np.array(low_masks["face"]).sum() > np.array(high_masks["face"]).sum()

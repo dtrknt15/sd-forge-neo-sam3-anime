@@ -64,3 +64,11 @@ def test_resolve_prompts_free_text_overrides_extra_checkbox():
         ("face", "anime face"),
         ("extra", "sword"),
     ]
+
+
+def test_color_for_id_distinct_extras():
+    c0 = constants.color_for_id("extra")
+    c1 = constants.color_for_id("extra_1")
+    c2 = constants.color_for_id("extra_2")
+    assert c0 != c1 and c1 != c2 and c0 != c2
+    assert constants.color_for_id("face") == constants.OVERLAY_PALETTE["face"]

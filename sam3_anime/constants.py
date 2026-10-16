@@ -43,9 +43,33 @@ OVERLAY_PALETTE: dict[str, tuple[int, int, int]] = {
     "extra": (255, 235, 59),
 }
 
+# Distinct palette for comma-separated free-text concepts (extra, extra_1, extra_2, ...).
+EXTRA_PALETTE: tuple[tuple[int, int, int], ...] = (
+    (255, 235, 59),  # extra: yellow
+    (255, 64, 129),  # extra_1: pink/magenta
+    (0, 230, 118),  # extra_2: bright green
+    (255, 110, 64),  # extra_3: deep orange/coral
+    (124, 77, 255),  # extra_4: violet
+    (24, 255, 255),  # extra_5: cyan
+    (255, 171, 64),  # extra_6: amber orange
+    (178, 255, 89),  # extra_7: lime
+)
+
 LOG_PREFIX = "[SAM3 Anime]"
 
 ACCORDION_LABEL = "SAM3 Anime Mask"
+
+
+def color_for_id(concept_id: str) -> tuple[int, int, int]:
+    """Return an RGB color tuple for `concept_id`, cycling EXTRA_PALETTE for extra_N."""
+    if concept_id in OVERLAY_PALETTE:
+        return OVERLAY_PALETTE[concept_id]
+    if concept_id.startswith("extra_"):
+        suffix = concept_id.partition("_")[2]
+        if suffix.isdigit():
+            idx = int(suffix)
+            return EXTRA_PALETTE[idx % len(EXTRA_PALETTE)]
+    return OVERLAY_PALETTE["extra"]
 
 
 def prompt_for_id(preset_id: str) -> str:
